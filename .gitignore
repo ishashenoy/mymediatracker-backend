@@ -1,0 +1,18 @@
+# node modules
+node_modules/
+
+# env
+.env
+
+# logs
+logs
+*.log
+npm-debug.log*
+
+# local env
+.env.local
+.env.*.local
+
+# database
+dump.rdb
+
