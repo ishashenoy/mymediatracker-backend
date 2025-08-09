@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 const getMedias = async (req,res) => {
     const user_id = req.user._id;
 
-    const medias = await Media.find({user_id}).sort({createdAt: -1});
+    const medias = await Media.find({user_id}).sort({status: 1});
 
     res.status(200).json(medias);
 }
@@ -13,12 +13,12 @@ const getMedias = async (req,res) => {
 //POST a new media
 const createMedia = async (req,res) => {
     console.log("Incoming request body:", req.body); 
-    const { name, image_url, score, progress, type, fav, rating, status } = req.body;
+    const { name, image_url, progress, type, fav, rating, status } = req.body;
 
     // add doc to db
     try {
         const user_id = req.user._id;
-        const media = await Media.create({ name, image_url, score, progress, type, fav, rating, status, user_id });
+        const media = await Media.create({ name, image_url, progress, type, fav, rating, status, user_id });
         res.status(200).json(media);
     } catch (error){
         res.status(400).json({error: error.message});

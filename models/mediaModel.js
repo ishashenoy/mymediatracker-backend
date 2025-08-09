@@ -11,20 +11,12 @@ const mediaSchema = new Schema({
         type: String,
         required: true
     },
-    score: {
-        type: Number,
-        required: false
-    },
     progress: {
         type: String,
         required: false
     },
     type:{
         type: String,
-        required: true
-    },
-    fav: {
-        type: Boolean,
         required: true
     },
     rating: {

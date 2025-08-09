@@ -10,10 +10,7 @@ const app = express();
 
 const cors = require('cors');
 
-app.use(cors({
-  origin: process.env.CLIENT_URL, 
-  credentials: true          
-}));
+app.use(cors());
 
 // middleware
 app.use(express.json());
@@ -31,7 +28,7 @@ mongoose.connect(process.env.MONGO_URI)
     .then(() => {
         // listen for requests
         app.listen(process.env.PORT || 3001, () => {
-            console.log('connected to db & listening on port', process.env.CLIENT_URL);
+            console.log('connected to db & listening on port', process.env.PORT);
         })
     })
     .catch((error) => {
