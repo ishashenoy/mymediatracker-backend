@@ -2,6 +2,7 @@ const express = require('express');
 const {
     createMedia,
     getMedias,
+    getProfileMedia,
     deleteMedia,
     updateMedia
 } = require('../controllers/mediaController')
@@ -14,6 +15,9 @@ router.use(requireAuth);
 
 //GET all media
 router.get('/', getMedias);
+
+//GET all media from a profile
+router.get('/:username', getProfileMedia);
 
 //POST a new media
 router.post('/', createMedia);

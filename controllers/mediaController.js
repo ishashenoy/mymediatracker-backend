@@ -1,4 +1,5 @@
 const Media = require('../models/mediaModel');
+const User = require('../models/userModel');
 const mongoose = require('mongoose');
 
 //GET all media
@@ -10,9 +11,23 @@ const getMedias = async (req,res) => {
     res.status(200).json(medias);
 }
 
+//GET media of a profile
+const getProfileMedia = async (req,res) => {
+    const { username } = req.params;
+
+    try {
+        const user = await User.findOne({username});
+        const user_id = user._id;
+        const profileMedia = await Media.find({user_id}).sort({status: 1});
+
+        res.status(200).json(profileMedia);
+    } catch (error){
+        res.status(500).json({ error: error.message });
+    }
+}
+
 //POST a new media
 const createMedia = async (req,res) => {
-    console.log("Incoming request body:", req.body); 
     const { name, image_url, progress, type, fav, rating, status } = req.body;
 
     // add doc to db
@@ -61,6 +76,7 @@ const updateMedia = async (req, res) => {
 
 module.exports = {
     createMedia,
+    getProfileMedia,
     getMedias,
     deleteMedia,
     updateMedia

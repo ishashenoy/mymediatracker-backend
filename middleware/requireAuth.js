@@ -4,7 +4,7 @@ const User = require('../models/userModel');
 const requireAuth = async (req, res, next) => {
     // verify if user is authenticated
     const { authorization } = req.headers;
-
+    
     if (!authorization){
         return res.status(401).json({error: 'Authorization token required'});
     }

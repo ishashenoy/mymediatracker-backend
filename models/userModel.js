@@ -40,7 +40,7 @@ userSchema.statics.signup = async function (email, password, username) {
         minUppercase: 0
     };
 
-    const exists = await this.findOne({ email }) || await this.findOne({username});
+    const exists = await this.findOne({ email }) || await this.findOne({ username: new RegExp(`^${username}$`, 'i') });
 
     if (exists){
         throw Error('Email/username already in use');
@@ -76,8 +76,7 @@ userSchema.statics.login = async function (email, password) {
     if (!match){
         throw Error('Incorrect password');
     }
-
-    console.log(user);
+    
     return user;
 }
 

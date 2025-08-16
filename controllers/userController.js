@@ -20,12 +20,13 @@ const loginUser = async (req, res) => {
     const {email, password, recaptchaToken} = req.body;
 
     if (!recaptchaToken) {
+        console.log('reCAPTCHA token is missing.');
         return res.status(400).json({ error: 'reCAPTCHA token is missing.' });
     }
 
     const isHuman = await verifyRecaptcha(recaptchaToken);
     if (!isHuman) {
-        return res.status(400).json({ error: 'reCAPTCHA verification failed.' });
+        return res.status(400).json({ error: 'reCAPTCHA verification failed.\n Please refresh the page and try again.' });
     }
 
     try {
@@ -51,7 +52,7 @@ const signupUser = async (req, res) => {
 
     const isHuman = await verifyRecaptcha(recaptchaToken);
     if (!isHuman) {
-        return res.status(400).json({ error: 'reCAPTCHA verification failed.' });
+        return res.status(400).json({ error: 'reCAPTCHA verification failed.\n Please refresh the page and try again.' });
     }
 
     try {
