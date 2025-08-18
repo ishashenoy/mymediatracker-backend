@@ -4,6 +4,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const mediaRoutes = require('./routes/medias');
 const userRoutes = require('./routes/user');
+const searchRoutes = require('./routes/search');
 
 // creating instance of express app
 const app = express();
@@ -22,6 +23,7 @@ app.use((req, res, next) => {
 // routes
 app.use('/api/medias', mediaRoutes);
 app.use('/api/user', userRoutes);
+app.use('/api/search', searchRoutes);
 
 //conecting to db
 mongoose.connect(process.env.MONGO_URI)
