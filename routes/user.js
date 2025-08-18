@@ -36,6 +36,6 @@ router.get('/followers/:username', getFollowers);
 router.get('/following/:username', getFollowing);
 
 // get icon
-router.get('/icon/:username', getIcon);
+router.get('/icon/:username', requireAuth, getIcon);
 
 module.exports = router;
