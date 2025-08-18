@@ -14,15 +14,35 @@ const getMedias = async (req,res) => {
 //GET media of a profile
 const getProfileMedia = async (req,res) => {
     const { username } = req.params;
+    // this is the sender's trusted user id 
+    // verified by the jwt token provided to our middleware
+    const senderId = req.user._id; 
 
     try {
         const user = await User.findOne({username});
-        const user_id = user._id;
-        const profileMedia = await Media.find({user_id}).sort({status: 1});
+        if (!user) {
+            return res.status(404).json({ error: "User not found" });
+        }
 
-        res.status(200).json(profileMedia);
+        const user_id = user._id;
+        const privacy = user.private;
+
+        //Checking if the current user is trying to access their own page
+        if (senderId.equals(user._id)){
+            const profileMedia = await Media.find({user_id}).sort({status: 1});
+            return res.status(200).json({watchList: profileMedia, private: privacy});
+        } else {
+            // If the account is public
+            if (!privacy){
+                const profileMedia = await Media.find({user_id}).sort({status: 1});
+                return res.status(200).json({watchList: profileMedia, private: privacy});
+            } else { 
+                // If the account is private and current user does not match the requested username
+                return res.status(403).json({ error: "This account is private" });
+            }
+        }
     } catch (error){
-        res.status(500).json({ error: error.message });
+        return res.status(500).json({ error: error.message });
     }
 }
 
@@ -42,12 +62,14 @@ const createMedia = async (req,res) => {
 
 //DELETE a media
 const deleteMedia = async(req,res) => {
+    const user_id = req.user._id;
     const { id } = req.params;
+
     if (!mongoose.Types.ObjectId.isValid(id)){
         return res.status(404).json({error: 'Media does not exist.'});
     }
 
-    const media = await Media.findOneAndDelete({_id: id});
+    const media = await Media.findOneAndDelete({_id: id, user_id : user_id});
 
     if (!media){
         return res.status(404).json({error: 'Media does not exist.'});
@@ -57,13 +79,14 @@ const deleteMedia = async(req,res) => {
 
 //UPDATE a media
 const updateMedia = async (req, res) => {
+    const user_id = req.user._id;
     const { id } = req.params;
 
     if (!mongoose.Types.ObjectId.isValid(id)){
         return res.status(404).json({error: 'Media does not exist.'});
     }
 
-    const media = await Media.findOneAndUpdate({_id: id}, {
+    const media = await Media.findOneAndUpdate({_id: id, user_id : user_id}, {
         ...req.body
     });
 
