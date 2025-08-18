@@ -11,7 +11,17 @@ const app = express();
 
 const cors = require('cors');
 
-app.use(cors());
+const corsOptions = {
+  origin: [
+    'https://mymediatracker.vercel.app',
+    'http://localhost:3000'
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+};
+app.use(cors(corsOptions));
+
+app.set('trust proxy', 1);
 
 // middleware
 app.use(express.json());
