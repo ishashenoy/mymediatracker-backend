@@ -31,25 +31,25 @@ router.post('/signup', authLimiter, signupUser);
 
 // follow request route
 // the username is of the receiving user
-router.patch('/follow/:username', limiter, requireAuth, followRequest);
+router.patch('/:username/follow', limiter, requireAuth, followRequest);
 
 // unfollow request route
 // the username is of the receiving user
-router.patch('/unfollow/:username', limiter, requireAuth, unfollowRequest);
+router.patch('/:username/unfollow', limiter, requireAuth, unfollowRequest);
 
 // change privacy
 router.patch('/:username/privacy', limiter, requireAuth, changePrivacy);
 
-// change icon
-router.post('/:username/process-icon', limiter, requireAuth, upload.single('image'), changeIcon);
-
 // get followers list
-router.get('/followers/:username', limiter, getFollowers);
+router.get('/:username/followers', limiter, getFollowers);
 
 // get following list
-router.get('/following/:username', limiter, getFollowing);
+router.get('/:username/following', limiter, getFollowing);
 
 // get icon
-router.get('/icon/:username', limiter, requireAuth, getIcon);
+router.get('/:username/icon', limiter, requireAuth, getIcon);
+
+// upload icon
+router.post('/:username/icon', limiter, requireAuth, upload.single('image'), changeIcon);
 
 module.exports = router;
