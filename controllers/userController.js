@@ -9,7 +9,7 @@ cloudinary.config({
 
 //create jwt
 const createToken = (_id) => {
-    return jwt.sign({_id}, process.env.SECRET, { expiresIn: '3d' })
+    return jwt.sign({_id}, process.env.SECRET)
 }
 
 const verifyRecaptcha = async (token) => {
