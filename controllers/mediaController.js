@@ -1,5 +1,9 @@
 const Media = require('../models/mediaModel');
 const User = require('../models/userModel');
+
+const NodeCache = require('node-cache');
+const trendingCache = new NodeCache({ stdTTL: 86400 });
+
 const mongoose = require('mongoose');
 
 //GET all media
@@ -41,6 +45,52 @@ const getProfileMedia = async (req,res) => {
                 return res.status(403).json({ error: "This account is private" });
             }
         }
+    } catch (error){
+        return res.status(500).json({ error: error.message });
+    }
+}
+
+//GET trending media
+const getTrendingMedia = async (req,res) => {
+
+    try {
+        const cachedResult = trendingCache.get('trendingMedia');
+        if (cachedResult) {
+            console.log('Cache found.');
+            return res.status(200).json(cachedResult);
+        }
+
+        console.log('Cache expired/not found. Fetching new trending media from database...');
+
+        const result = await Media.aggregate([
+            {
+                $group: {
+                _id: { name: "$name", type: "$type" }, // group by fields
+                count: { $sum: 1 }, // count frequency
+                sampleDoc: { $first: "$$ROOT" } // keep one example document
+                }
+            },
+            { $sort: { count: -1 } }, // sort by frequency
+            { $limit: 15 }, // take top 15
+            {
+                $project: {
+                    _id: 0,
+                    name: "$_id.name",
+                    type: "$_id.type",
+                    count: 1,
+                    sampleDoc: {
+                        _id: "$sampleDoc._id",
+                        name: "$sampleDoc.name",
+                        type: "$sampleDoc.type",
+                        image_url: "$sampleDoc.image_url"
+                    }
+                }
+            }
+        ]);
+
+        trendingCache.set('trendingMedia', result);
+
+        return res.status(200).json(result);
     } catch (error){
         return res.status(500).json({ error: error.message });
     }
@@ -100,6 +150,7 @@ const updateMedia = async (req, res) => {
 module.exports = {
     createMedia,
     getProfileMedia,
+    getTrendingMedia,
     getMedias,
     deleteMedia,
     updateMedia

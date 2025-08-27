@@ -3,6 +3,7 @@ const {
     createMedia,
     getMedias,
     getProfileMedia,
+    getTrendingMedia,
     deleteMedia,
     updateMedia
 } = require('../controllers/mediaController')
@@ -17,10 +18,15 @@ const limiter = rateLimit({
 
 const router = express.Router();
 
-//require auth for all media routes
-router.use(requireAuth);
 router.use(limiter);
 
+// GET the top 30 medias.
+router.get('/trending', getTrendingMedia);
+
+//require auth for all media routes
+router.use(requireAuth);
+
+// Note: Combine these two - first is not needed.
 //GET all media
 router.get('/', getMedias);
 
