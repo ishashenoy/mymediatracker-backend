@@ -1,3 +1,5 @@
+const { XMLParser } = require("fast-xml-parser");
+
 const Media = require('../models/mediaModel');
 const User = require('../models/userModel');
 
@@ -12,18 +14,20 @@ const getMedias = async (req,res) => {
 
     const medias = await Media.find({user_id}).sort({status: 1});
 
-    res.status(200).json(medias);
+    const user = await User.findOne({ _id: user_id });
+    const privacy = user.private;
+
+    return res.status(200).json({ watchList: medias, private: privacy });
 }
 
 //GET media of a profile
 const getProfileMedia = async (req,res) => {
     const { username } = req.params;
-    // this is the sender's trusted user id 
-    // verified by the jwt token provided to our middleware
-    const senderId = req.user?._id || null; 
-
+    console.log('error');
     try {
-        const user = await User.findOne({username});
+        const user = await User.findOne({ username });
+
+        //if the user has requested an invalid username
         if (!user) {
             return res.status(404).json({ error: "User not found" });
         }
@@ -31,20 +35,14 @@ const getProfileMedia = async (req,res) => {
         const user_id = user._id;
         const privacy = user.private;
 
-        //Checking if the current user is trying to access their own page
-        if (senderId !== null && senderId.equals(user._id)){
-            const profileMedia = await Media.find({user_id}).sort({status: 1});
-            return res.status(200).json({watchList: profileMedia, private: privacy});
-        } else {
-            // If the account is public
-            if (!privacy){
-                const profileMedia = await Media.find({user_id}).sort({status: 1});
-                return res.status(200).json({watchList: profileMedia, private: privacy});
-            } else { 
-                // If the account is private and current user does not match the requested username
-                return res.status(403).json({ error: "This account is private" });
-            }
+        // public profile
+        if (!privacy) {
+            const profileMedia = await Media.find({ user_id }).sort({ status: 1 });
+            return res.status(200).json({ watchList: profileMedia, private: privacy });
         }
+
+        // private profile
+        return res.status(403).json({ error: "This account is private" });
     } catch (error){
         return res.status(500).json({ error: error.message });
     }
@@ -98,12 +96,12 @@ const getTrendingMedia = async (req,res) => {
 
 //POST a new media
 const createMedia = async (req,res) => {
-    const { name, image_url, progress, type, fav, rating, status } = req.body;
+    const { name, image_url, progress, type, rating, status } = req.body;
 
     // add doc to db
     try {
         const user_id = req.user._id;
-        const media = await Media.create({ name, image_url, progress, type, fav, rating, status, user_id });
+        const media = await Media.create({ name, image_url, progress, type, rating, status, user_id });
         res.status(200).json(media);
     } catch (error){
         res.status(400).json({error: error.message});
@@ -147,11 +145,85 @@ const updateMedia = async (req, res) => {
     res.status(200).json(media);
 }
 
+
+// IMPORT (POST) media(s) from other website
+const importMedia = async (req,res) => {
+    const { source } = req.params;
+    const { handle } = req.body;
+
+    //getting the user's verified id attached by middleware in req
+    const user_id = req.user._id;
+
+    const parser = new XMLParser();
+
+    let url;
+    if (source==='goodreads'){
+        url = "https://www.goodreads.com/review/list_rss/"+handle;
+    }
+
+    let items;
+
+    let importedMedia = [];
+
+    try{
+        const response = await fetch(url);
+
+        if (!response.ok) throw new Error("Failed to fetch");
+
+        const xmlData = await response.text();
+        const jsonObj = parser.parse(xmlData);
+        items = jsonObj?.rss?.channel?.item || [];
+
+        console.log("Converted JSON:", items);
+
+        for (const item of items) {
+            const name = item.title;
+            const image_url = item.book_large_image_url;
+            const progress = "";
+            const rating = String(item.user_rating) || '0';
+
+            let type;
+            switch (source){
+                case "goodreads":
+                    type='book';
+                    break;
+                default:
+                    return res.status(400).json({error: 'Something went wrong.'});
+            }
+
+            let status;
+            switch (item.user_shelves){
+                case 'read':
+                case '':
+                    status='done';
+                    break;
+                case 'currently-reading':
+                    status='doing';
+                    break;
+                case 'to-read':
+                    status='to-do';
+                    break;
+                default:
+                    return res.status(400).json({error: 'Something went wrong.'});
+            }
+
+            // add docs to db
+            const media = await Media.create(name, image_url, progress, type, rating, status, user_id);
+            importedMedia.push(media);
+        }
+    } catch (error){
+        res.status(500).json({error: error.message});
+    }
+
+    return res.status(200).json(importedMedia);
+}
+
 module.exports = {
     createMedia,
     getProfileMedia,
     getTrendingMedia,
     getMedias,
     deleteMedia,
-    updateMedia
+    updateMedia,
+    importMedia
 }

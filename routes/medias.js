@@ -5,7 +5,8 @@ const {
     getProfileMedia,
     getTrendingMedia,
     deleteMedia,
-    updateMedia
+    updateMedia,
+    importMedia
 } = require('../controllers/mediaController')
 const requireAuth = require('../middleware/requireAuth');
 const rateLimit = require('express-rate-limit');
@@ -41,5 +42,8 @@ router.delete('/:id', deleteMedia);
 
 //UPDATE a media
 router.patch('/:id', updateMedia);
+
+// IMPORT (POST) media(s) from other website
+router.post('/import/:source', importMedia);
 
 module.exports = router;

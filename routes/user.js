@@ -44,10 +44,10 @@ router.patch('/:username/privacy', limiter, requireAuth, changePrivacy);
 router.post('/:username/icon', limiter, requireAuth, upload.single('image'), changeIcon);
 
 // get followers list
-router.get('/:username/followers', requireAuth, limiter, getFollowers);
+router.get('/:username/followers', limiter, requireAuth, getFollowers);
 
 // get following list
-router.get('/:username/following', requireAuth, limiter, getFollowing);
+router.get('/:username/following', limiter, requireAuth, getFollowing);
 
 //This route below can be seen without having an account
 // get icon
