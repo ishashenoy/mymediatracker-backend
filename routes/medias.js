@@ -23,15 +23,15 @@ router.use(limiter);
 // GET the top 30 medias.
 router.get('/trending', getTrendingMedia);
 
+//GET all media from a profile
+// For this route, you do not need to have an account
+router.get('/:username', getProfileMedia);
+
 //require auth for all media routes
 router.use(requireAuth);
 
-// Note: Combine these two - first is not needed.
 //GET all media
 router.get('/', getMedias);
-
-//GET all media from a profile
-router.get('/:username', getProfileMedia);
 
 //POST a new media
 router.post('/', createMedia);

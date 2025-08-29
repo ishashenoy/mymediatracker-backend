@@ -20,7 +20,7 @@ const getProfileMedia = async (req,res) => {
     const { username } = req.params;
     // this is the sender's trusted user id 
     // verified by the jwt token provided to our middleware
-    const senderId = req.user._id; 
+    const senderId = req.user?._id || null; 
 
     try {
         const user = await User.findOne({username});
@@ -32,7 +32,7 @@ const getProfileMedia = async (req,res) => {
         const privacy = user.private;
 
         //Checking if the current user is trying to access their own page
-        if (senderId.equals(user._id)){
+        if (senderId !== null && senderId.equals(user._id)){
             const profileMedia = await Media.find({user_id}).sort({status: 1});
             return res.status(200).json({watchList: profileMedia, private: privacy});
         } else {

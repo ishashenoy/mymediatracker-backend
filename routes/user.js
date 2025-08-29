@@ -40,16 +40,17 @@ router.patch('/:username/unfollow', limiter, requireAuth, unfollowRequest);
 // change privacy
 router.patch('/:username/privacy', limiter, requireAuth, changePrivacy);
 
-// get followers list
-router.get('/:username/followers', limiter, getFollowers);
-
-// get following list
-router.get('/:username/following', limiter, getFollowing);
-
-// get icon
-router.get('/:username/icon', limiter, requireAuth, getIcon);
-
 // upload icon
 router.post('/:username/icon', limiter, requireAuth, upload.single('image'), changeIcon);
+
+// get followers list
+router.get('/:username/followers', requireAuth, limiter, getFollowers);
+
+// get following list
+router.get('/:username/following', requireAuth, limiter, getFollowing);
+
+//This route below can be seen without having an account
+// get icon
+router.get('/:username/icon', limiter, getIcon);
 
 module.exports = router;
