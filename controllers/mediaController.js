@@ -149,7 +149,23 @@ const updateMedia = async (req, res) => {
 // IMPORT (POST) media(s) from other website
 const importMedia = async (req,res) => {
     const { source } = req.params;
-    const { handle } = req.body;
+    let  { handle } = req.body;
+
+    if (!handle) {
+        return res.status(400).json({ error: "Handle is required" });
+    }
+
+    // Ensure handle is a string and trim
+    handle = String(handle || "").trim();
+    
+
+    // Validate handle is ONLY numerical
+    if (!/^\d+$/.test(handle)) {
+        return res.status(400).json({ error: "Invalid handle. Must be a number." });
+    }
+
+    // safe conversion to int
+    handle = parseInt(handle, 10);
 
     //getting the user's verified id attached by middleware in req
     const user_id = req.user._id;
@@ -159,6 +175,8 @@ const importMedia = async (req,res) => {
     let url;
     if (source==='goodreads'){
         url = "https://www.goodreads.com/review/list_rss/"+handle;
+    }else {
+        return res.status(400).json({ error: "Unsupported source" });
     }
 
     let items;
@@ -173,14 +191,23 @@ const importMedia = async (req,res) => {
         const xmlData = await response.text();
         const jsonObj = parser.parse(xmlData);
         items = jsonObj?.rss?.channel?.item || [];
+        if (!Array.isArray(items)) {
+            items = [items];
+        }
 
-        console.log("Converted JSON:", items);
+        function unwrap(val) {
+            if (val && typeof val === "object" && "__cdata" in val) {
+                return val.__cdata;
+            }
+            return val ?? "";
+        }
+
 
         for (const item of items) {
-            const name = item.title;
-            const image_url = item.book_large_image_url;
+            const name = unwrap(item.title);
+            const image_url = unwrap(item.book_large_image_url);
             const progress = "";
-            const rating = String(item.user_rating) || '0';
+            const rating = String(item.user_rating || '0');
 
             let type;
             switch (source){
@@ -192,23 +219,16 @@ const importMedia = async (req,res) => {
             }
 
             let status;
-            switch (item.user_shelves){
-                case 'read':
-                case '':
-                    status='done';
-                    break;
-                case 'currently-reading':
-                    status='doing';
-                    break;
-                case 'to-read':
-                    status='to-do';
-                    break;
-                default:
-                    return res.status(400).json({error: 'Something went wrong.'});
+            if (item.user_shelves.includes("to-read")) {
+                status = "to-do";
+            } else if (item.user_shelves.includes("currently-reading")) {
+                status = "doing";
+            } else {
+                status = "done";
             }
 
             // add docs to db
-            const media = await Media.create(name, image_url, progress, type, rating, status, user_id);
+            const media = await Media.create({name, image_url, progress, type, rating, status, user_id});
             importedMedia.push(media);
         }
     } catch (error){
