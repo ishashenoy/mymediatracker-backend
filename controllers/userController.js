@@ -46,8 +46,8 @@ const loginUser = async (req, res) => {
     }
 }
 
-// GET user's follower list
-const getFollowers = async (req, res) => {
+// GET user's connections list
+const getConnections = async (req, res) => {
     const { username } = req.params; // this is the user's username
     const user = await User.findOne({username: username});
 
@@ -55,7 +55,8 @@ const getFollowers = async (req, res) => {
     if (!user) return res.status(404).json({error: 'User does not exist.'});
 
     const userFollowers = user.followers;
-    return res.status(200).json(userFollowers);
+    const userFollowing = user.following;
+    return res.status(200).json({followers: userFollowers, following: userFollowing});
 }
 
 // GET user's icon
@@ -71,18 +72,6 @@ const getIcon = async (req, res) => {
         return res.status(200).json({message: 'none'});
     }
     return res.status(200).json(userIcon);
-}
-
-// GET user's following list
-const getFollowing = async (req, res) => {
-    const { username } = req.params; // this is the user's username
-    const user = await User.findOne({username: username});
-
-    //Checking if the username exists
-    if (!user) return res.status(404).json({error: 'User does not exist.'});
-
-    const userFollowing = user.following;
-    return res.status(200).json(userFollowing);
 }
 
 // change privacy of user account
@@ -234,7 +223,6 @@ module.exports = {
     unfollowRequest,
     changePrivacy,
     changeIcon,
-    getFollowers,
-    getFollowing,
+    getConnections,
     getIcon
 }

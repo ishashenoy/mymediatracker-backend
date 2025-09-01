@@ -19,7 +19,7 @@ const authLimiter = rateLimit({
 });
 
 //controller functions
-const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, getFollowers, getFollowing, getIcon} = require('../controllers/userController');
+const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, getConnections, getIcon} = require('../controllers/userController');
 
 const router = express.Router();
 
@@ -43,11 +43,8 @@ router.patch('/:username/privacy', limiter, requireAuth, changePrivacy);
 // upload icon
 router.post('/:username/icon', limiter, requireAuth, upload.single('image'), changeIcon);
 
-// get followers list
-router.get('/:username/followers', limiter, requireAuth, getFollowers);
-
-// get following list
-router.get('/:username/following', limiter, requireAuth, getFollowing);
+// get connections list
+router.get('/:username/connections', limiter, requireAuth, getConnections);
 
 //This route below can be seen without having an account
 // get icon
