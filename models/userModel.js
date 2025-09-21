@@ -31,6 +31,11 @@ const userSchema = new Schema({
         type: String,
         required: false
     },
+    banners: {
+        type: Map,
+        of: String, // each key stores a banner URL
+        default: {} 
+    },
     private : {
         type: Boolean,
         default: false

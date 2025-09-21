@@ -19,7 +19,7 @@ const authLimiter = rateLimit({
 });
 
 //controller functions
-const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, getConnections, getIcon} = require('../controllers/userController');
+const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getBanner} = require('../controllers/userController');
 
 const router = express.Router();
 
@@ -40,6 +40,9 @@ router.patch('/:username/unfollow', limiter, requireAuth, unfollowRequest);
 // change privacy
 router.patch('/:username/privacy', limiter, requireAuth, changePrivacy);
 
+// upload banner
+router.post('/banners/:type_number', limiter, requireAuth, upload.single('image'), changeBanner);
+
 // upload icon
 router.post('/:username/icon', limiter, requireAuth, upload.single('image'), changeIcon);
 
@@ -49,5 +52,8 @@ router.get('/:username/connections', limiter, requireAuth, getConnections);
 //This route below can be seen without having an account
 // get icon
 router.get('/:username/icon', limiter, getIcon);
+
+// get banners
+router.get('/banners', limiter, requireAuth, getBanner);
 
 module.exports = router;

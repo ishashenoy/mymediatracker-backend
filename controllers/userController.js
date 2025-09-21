@@ -113,7 +113,9 @@ const changeIcon = async (req, res) => {
 
     if (!(user._id.equals(senderId))) return res.status(401).json({error: 'Not authorized'});
 
+    //Uploading the image to cloudinary storage
     cloudinary.uploader.upload_stream(
+    //Cropping the image to fit size limits
     { transformation: [
         { width: 500, height: 500, crop: "limit" } // image shouldn't exceed 500x500
     ]},
@@ -121,11 +123,83 @@ const changeIcon = async (req, res) => {
         if (error){
             return res.status(400).json({error: error})
         }else{
+            //Saving the image url to mongo db
             user.icon = result.secure_url;
             user.save();
             return res.status(200).json({ message: "Icon processed", image_url: result.secure_url});
         }
     }).end(req.file.buffer);
+}
+
+
+// GET user's icon
+const getBanner = async (req, res) => {
+    const user_id = req.user._id;
+    
+    const user = await User.findOne({_id: user_id});
+
+    //Checking if the username exists
+    if (!user) return res.status(404).json({error: 'User does not exist.'});
+
+    let banners = user.banners;
+
+    // Convert Map to plain object if needed
+    if (banners instanceof Map) {
+        banners = Object.fromEntries(banners);
+    }
+
+    if (!banners || Object.keys(banners).length === 0) {
+        return res.status(404).json({ message: 'none' });
+    }
+    return res.status(200).json(banners);
+}
+
+// change user's banner for a media page
+const changeBanner = async (req, res) => {
+    const { type_number  } = req.params; // this is the type of media
+
+    const user_id = req.user._id;
+
+    const user = await User.findOne({_id: user_id});
+
+    // this is the sender's trusted user id 
+    // verified by the jwt token provided to our middleware
+    const senderId = req.user._id;
+
+    if (!(user._id.equals(senderId))) return res.status(401).json({error: 'Not authorized'});
+
+    cloudinary.uploader.upload_stream(
+    { transformation: [
+        { width: 1600, height: 200, crop: "limit" } // image shouldn't exceed 500x500
+    ]},
+    (error, result) => {
+        if (error){
+            return res.status(400).json({error: error})
+        }else{
+            if (!type_number ) return;
+
+            if (!user.banners) {
+                user.banners = new Map(); // initialize if missing
+            }
+
+            user.banners.set(type_number, result.secure_url);
+
+            user.save();
+            return res.status(200).json({ message: "Banner processed", image_url: result.secure_url});
+        }
+    }).end(req.file.buffer);
+}
+
+// get a list of all public users based on a search
+const getUsers = async (req,res) => {
+    const {username} = req.body;
+
+    try {
+        const users = await User.find({username: username});
+        return res.status(200).json(users);
+    }catch (error) {
+        res.status(400).json({error: error.message});
+    }
 }
 
 // follow another user (update sender's following list, receiver's follower list)
@@ -223,6 +297,8 @@ module.exports = {
     unfollowRequest,
     changePrivacy,
     changeIcon,
+    changeBanner,
     getConnections,
-    getIcon
+    getIcon,
+    getBanner
 }
