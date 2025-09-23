@@ -113,11 +113,21 @@ const changeIcon = async (req, res) => {
 
     if (!(user._id.equals(senderId))) return res.status(401).json({error: 'Not authorized'});
 
+    if (user.icon) {
+        // This id will allow us to replace images and delete unused ones.
+        const oldPublicId = user.icon.split('/').slice(-1)[0].split('.')[0]; // extract public_id from URL
+        await cloudinary.uploader.destroy(oldPublicId);
+    }
+
     //Uploading the image to cloudinary storage
     cloudinary.uploader.upload_stream(
-    //Cropping the image to fit size limits
-    { transformation: [
-        { width: 500, height: 500, crop: "limit" } // image shouldn't exceed 500x500
+    { 
+        public_id: `icons/${user._id}`, // give a unique id for this user's icon
+        overwrite: true,
+        //Cropping the image to fit size limits
+        transformation: [
+        { width: 500, height: 500, crop: "limit" }, // image shouldn't exceed 500x500
+        { quality: "auto:eco", fetch_format: "auto" } // compressing images as well
     ]},
     (error, result) => {
         if (error){
@@ -132,7 +142,7 @@ const changeIcon = async (req, res) => {
 }
 
 
-// GET user's icon
+// GET user's banners
 const getBanner = async (req, res) => {
     const user_id = req.user._id;
     
@@ -168,9 +178,19 @@ const changeBanner = async (req, res) => {
 
     if (!(user._id.equals(senderId))) return res.status(401).json({error: 'Not authorized'});
 
+    if (user.banners && user.banners.get(type_number)) {
+        const oldBannerUrl = user.banners.get(type_number);
+        const oldPublicId = oldBannerUrl.split('/').slice(-1)[0].split('.')[0];
+        await cloudinary.uploader.destroy(oldPublicId);
+    }
+
     cloudinary.uploader.upload_stream(
-    { transformation: [
-        { width: 1600, height: 200, crop: "limit" } // image shouldn't exceed 500x500
+    { 
+        public_id: `banners/${user._id}_${type_number}`, // unique id per type_number
+        overwrite: true,
+        transformation: [
+        { width: 1600, height: 200, crop: "limit" }, // image shouldn't exceed 1600x200
+        { quality: "auto:eco", fetch_format: "auto" } // compressing images as well
     ]},
     (error, result) => {
         if (error){
