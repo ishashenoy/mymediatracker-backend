@@ -232,7 +232,7 @@ const importMedia = async (req,res) => {
             importedMedia.push(media);
         }
     } catch (error){
-        res.status(500).json({error: error.message});
+        return res.status(500).json({error: error.message});
     }
 
     return res.status(200).json(importedMedia);
