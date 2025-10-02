@@ -212,11 +212,17 @@ const changeBanner = async (req, res) => {
 
 // get a list of all public users based on a search
 const getUsers = async (req,res) => {
-    const {username} = req.body;
+    const username = req.query.username;
 
     try {
         const users = await User.find({username: username});
-        return res.status(200).json(users);
+
+        const user_info = {
+            username: username,
+            icon_url: users?.image_url
+        }
+
+        return users ? res.status(200).json(user_info) : res.status(404).json({error: "User not found."});
     }catch (error) {
         res.status(400).json({error: error.message});
     }
@@ -320,5 +326,6 @@ module.exports = {
     changeBanner,
     getConnections,
     getIcon,
-    getBanner
+    getBanner,
+    getUsers
 }

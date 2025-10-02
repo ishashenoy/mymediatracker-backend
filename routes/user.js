@@ -19,7 +19,7 @@ const authLimiter = rateLimit({
 });
 
 //controller functions
-const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getBanner} = require('../controllers/userController');
+const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getBanner, getUsers} = require('../controllers/userController');
 
 const router = express.Router();
 
@@ -32,6 +32,9 @@ router.post('/signup', authLimiter, signupUser);
 // follow request route
 // the username is of the receiving user
 router.patch('/:username/follow', limiter, requireAuth, followRequest);
+
+//GET all users
+router.get('/:username', limiter, getUsers);
 
 // unfollow request route
 // the username is of the receiving user

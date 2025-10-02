@@ -12,8 +12,8 @@ const app = express();
 const cors = require('cors');
 
 const corsOptions = {
-  origin: [
-    'https://mymediatracker.vercel.app',
+  origin: [ // REMEMBER: change when domain name is changed
+    'https://mymediatracker.app', 
     'http://localhost:3000'
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
