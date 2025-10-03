@@ -120,7 +120,7 @@ const changeIcon = async (req, res) => {
     }
 
     //Uploading the image to cloudinary storage
-    cloudinary.uploader.upload_stream(
+    return cloudinary.uploader.upload_stream(
     { 
         public_id: `icons/${user._id}`, // give a unique id for this user's icon
         overwrite: true,
@@ -156,11 +156,14 @@ const getBanner = async (req, res) => {
     // Convert Map to plain object if needed
     if (banners instanceof Map) {
         banners = Object.fromEntries(banners);
+    } else {
+        banners = banners.toObject ? banners.toObject() : banners;
     }
 
     if (!banners || Object.keys(banners).length === 0) {
-        return res.status(404).json({ message: 'none' });
+        return res.status(200).json({ message: 'none' });
     }
+
     return res.status(200).json(banners);
 }
 
