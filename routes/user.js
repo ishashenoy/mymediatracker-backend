@@ -33,6 +33,9 @@ router.post('/signup', authLimiter, signupUser);
 // the username is of the receiving user
 router.patch('/:username/follow', limiter, requireAuth, followRequest);
 
+// get banners
+router.get('/banners', limiter, requireAuth, getBanner);
+
 //GET all users
 router.get('/:username', limiter, getUsers);
 
@@ -55,8 +58,5 @@ router.get('/:username/connections', limiter, requireAuth, getConnections);
 //This route below can be seen without having an account
 // get icon
 router.get('/:username/icon', limiter, getIcon);
-
-// get banners
-router.get('/banners', limiter, requireAuth, getBanner);
 
 module.exports = router;

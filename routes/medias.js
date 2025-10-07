@@ -6,10 +6,15 @@ const {
     getTrendingMedia,
     deleteMedia,
     updateMedia,
-    importMedia
+    importMedia,
+    uploadCover
 } = require('../controllers/mediaController')
 const requireAuth = require('../middleware/requireAuth');
 const rateLimit = require('express-rate-limit');
+
+const multer = require('multer');
+const storage = multer.memoryStorage(); 
+const upload = multer({ storage: storage });
 
 const limiter = rateLimit({
   windowMs: 5 * 60 * 1000, // 5 minutes
@@ -45,5 +50,8 @@ router.patch('/:id', updateMedia);
 
 // IMPORT (POST) media(s) from other website
 router.post('/import/:source', importMedia);
+
+// upload a media cover
+router.post('/image', limiter, requireAuth, upload.single('image'), uploadCover);
 
 module.exports = router;

@@ -153,17 +153,18 @@ const getBanner = async (req, res) => {
 
     let banners = user.banners;
 
-    // Convert Map to plain object if needed
-    if (banners instanceof Map) {
-        banners = Object.fromEntries(banners);
-    } else {
-        banners = banners.toObject ? banners.toObject() : banners;
-    }
-
     if (!banners || Object.keys(banners).length === 0) {
         return res.status(200).json({ message: 'none' });
     }
 
+
+    // Convert Map to plain object if needed
+    if (banners instanceof Map) {
+        banners = Object.fromEntries(banners);
+    } else if (banners && banners.toObject) {
+        banners = banners.toObject();
+    }
+    
     return res.status(200).json(banners);
 }
 
@@ -208,6 +209,7 @@ const changeBanner = async (req, res) => {
             user.banners.set(type_number, result.secure_url);
 
             user.save();
+
             return res.status(200).json({ message: "Banner processed", image_url: result.secure_url});
         }
     }).end(req.file.buffer);

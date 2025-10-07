@@ -8,6 +8,12 @@ const trendingCache = new NodeCache({ stdTTL: 86400 });
 
 const mongoose = require('mongoose');
 
+const cloudinary = require('cloudinary').v2;
+
+cloudinary.config({
+    cloudinary_url: process.env.CLOUDINARY_URL
+});
+
 //GET all media
 const getMedias = async (req,res) => {
     const user_id = req.user._id;
@@ -145,6 +151,27 @@ const updateMedia = async (req, res) => {
     res.status(200).json(media);
 }
 
+// Uploading media covers
+const uploadCover = async (req,res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No image file provided' });
+    }
+    //Uploading the image to cloudinary storage
+    return cloudinary.uploader.upload_stream(
+    {
+        //Cropping the image to fit size limits
+        transformation: [
+            { width: 300, height: 500, crop: "limit" }, // image shouldn't exceed 300x500
+            { quality: "auto:eco", fetch_format: "auto" } // compressing images as well
+        ]},
+    (error, result) => {
+        if (error){
+            return res.status(400).json({error: error})
+        }else{
+            return res.status(200).json({ message: "Cover uploaded", image_url: result.secure_url});
+        }
+    }).end(req.file.buffer);
+}
 
 // IMPORT (POST) media(s) from other website
 const importMedia = async (req,res) => {
@@ -245,5 +272,6 @@ module.exports = {
     getMedias,
     deleteMedia,
     updateMedia,
-    importMedia
+    importMedia,
+    uploadCover
 }
