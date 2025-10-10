@@ -30,6 +30,10 @@ const mediaSchema = new Schema({
     user_id : {
         type: String,
         required: true
+    },
+    media_id : {
+        type: String,
+        index: true
     }
 }, {timestamps: true})
 

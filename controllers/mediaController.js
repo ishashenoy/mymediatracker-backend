@@ -1,5 +1,10 @@
 const { XMLParser } = require("fast-xml-parser");
 
+// Used to make strings that are url friendly
+const slugify = require("slugify"); 
+// Used to make unique hashes
+const crypto = require("crypto");   
+
 const Media = require('../models/mediaModel');
 const User = require('../models/userModel');
 
@@ -13,6 +18,21 @@ const cloudinary = require('cloudinary').v2;
 cloudinary.config({
     cloudinary_url: process.env.CLOUDINARY_URL
 });
+
+// This function will help us generate slugs
+function generateHash(str) {
+    if (!str) return crypto.randomBytes(3).toString("hex");
+    return crypto.createHash("md5").update(str).digest("hex").slice(0, 6);
+}
+
+function generateSlug(name, imageUrl) {
+    // Only take the first 50 chars of the name, converted to a clean slug
+    const base = slugify(name || "untitled", { lower: true, strict: true }).slice(0, 50);
+    // Generate a hash based on the image URL or name
+    const hash = generateHash(imageUrl || name);
+    // Combine them, e.g., "drawing-closer-4394b0"
+    return `${base}-${hash}`;
+}
 
 //GET all media
 const getMedias = async (req,res) => {
@@ -54,7 +74,8 @@ const getProfileMedia = async (req,res) => {
     }
 }
 
-//GET trending media
+// GET trending media
+// Will be replaced by a ML based recommendation system soon
 const getTrendingMedia = async (req,res) => {
 
     try {
@@ -104,10 +125,17 @@ const getTrendingMedia = async (req,res) => {
 const createMedia = async (req,res) => {
     const { name, image_url, progress, type, rating, status } = req.body;
 
+    // Validating the request
+    if (!name || !type) {
+        return res.status(400).json({ error: "Name and type are required." });
+    }
+
+    const media_id = generateSlug(name, image_url);
+
     // add doc to db
     try {
         const user_id = req.user._id;
-        const media = await Media.create({ name, image_url, progress, type, rating, status, user_id });
+        const media = await Media.create({ name, image_url, progress, type, rating, status, user_id, media_id });
         res.status(200).json(media);
     } catch (error){
         res.status(400).json({error: error.message});
@@ -254,8 +282,10 @@ const importMedia = async (req,res) => {
                 status = "done";
             }
 
+            const media_id = generateSlug(name, image_url);
+
             // add docs to db
-            const media = await Media.create({name, image_url, progress, type, rating, status, user_id});
+            const media = await Media.create({name, image_url, progress, type, rating, status, user_id, media_id});
             importedMedia.push(media);
         }
     } catch (error){
