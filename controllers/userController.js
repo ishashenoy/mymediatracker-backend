@@ -360,21 +360,21 @@ const sendPasswordResetEmail = async (req, res) => {
         // Configure nodemailer transport
         const transporter = nodemailer.createTransport({
             host: 'smtp.gmail.com',
-            port: 587,
-            secure: false,
+            port: 465,
+            secure: true,
             auth: {
                 user: process.env.EMAIL_USER,
                 pass: process.env.EMAIL_PASS,
             },
             tls: {
-                rejectUnauthorized: false,
-                ciphers: 'SSLv3'
+                rejectUnauthorized: true,
             },
             debug: true, // Enable debugging
             logger: true, // Enable logging
-            connectionTimeout: 30000, // 30 seconds
-            greetingTimeout: 30000,
-            socketTimeout: 30000
+            // Increase timeouts
+            connectionTimeout: 60000, // 60 seconds
+            greetingTimeout: 60000,
+            socketTimeout: 60000
         });
 
         // Add connection verification before sending
