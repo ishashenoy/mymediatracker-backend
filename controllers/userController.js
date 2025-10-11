@@ -1,7 +1,10 @@
 const User = require('../models/userModel');
 const jwt = require('jsonwebtoken');
+const nodemailer = require('nodemailer');
 const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
+const bcrypt = require('bcrypt');
+const validator = require('validator');
 
 cloudinary.config({
     cloudinary_url: process.env.CLOUDINARY_URL
@@ -321,6 +324,119 @@ const signupUser = async (req, res) => {
     }
 }
 
+const sendPasswordResetEmail = async (req, res) => {
+    const { email, recaptchaToken } = req.body;
+
+    if (!recaptchaToken) {
+        return res.status(400).json({ error: 'reCAPTCHA token is missing.' });
+    }
+
+    const isHuman = await verifyRecaptcha(recaptchaToken);
+    if (!isHuman) {
+        return res.status(400).json({ error: 'reCAPTCHA verification failed. Please refresh the page and try again.' });
+    }
+
+    try {
+        const user = await User.findOne({ email });
+        if (!user) {
+            return res.status(404).json({ error: 'No account found with that email.' });
+        }
+
+        // Create a short-lived token (expires in 15 minutes)
+        const resetToken = jwt.sign(
+            { _id: user._id },
+            process.env.PASSWORD_RESET_SECRET,
+            { expiresIn: '15m' }
+        );
+
+        // Construct password reset link (update domain to your frontend URL)
+        const resetLink = `${
+            // https is always used in production
+            process.env.NODE_ENV === 'production' 
+                ? 'https://' 
+                : 'http://' // http is only allowed in development
+        }${process.env.CLIENT_URL}/reset-password/${resetToken}`;
+
+        // Configure nodemailer transport
+        const transporter = nodemailer.createTransport({
+            service: 'gmail',
+            auth: {
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS,
+            },
+        });
+
+        // Send the email
+        await transporter.sendMail({
+            from: `"MyMediaTracker Support" <${process.env.EMAIL_USER}>`,
+            to: email,
+            subject: 'Password Reset Request',
+            html: `
+                <p>Hello ${user.username},</p>
+                <p>You requested to reset your password. Click the link below to choose a new password:</p>
+                <a href="${resetLink}" target="_blank">Reset Password</a>
+                <p>This link will expire in 15 minutes.</p>
+                <p>If you did not request this, you can safely ignore this email.</p>
+            `,
+            headers: {
+                'X-Priority': '1',
+                'X-MSMail-Priority': 'High',
+                'Importance': 'high',
+                'X-Content-Type-Options': 'nosniff'
+            }
+        });
+
+        return res.status(200).json({ message: 'Password reset email sent.' });
+    } catch (error) {
+        console.error('Error sending reset email:', error);
+        return res.status(500).json({ error: 'Failed to send password reset email.' });
+    }
+};
+
+const resetPassword = async (req, res) => {
+    const { token } = req.params;
+    const { password } = req.body;
+
+    try {
+        // Verify the token
+        const decoded = jwt.verify(token, process.env.PASSWORD_RESET_SECRET);
+        const userId = decoded._id;
+
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ error: 'User not found.' });
+        }
+
+        const customOptions = {
+            minLength: 8,
+            minSymbols: 0,
+            minLowercase: 1,
+            minUppercase: 0
+        };
+
+        if (!validator.isStrongPassword(password, customOptions)){
+            return res.status(400).json({ error: 'Password not strong enough!' });
+        }
+
+        // Hash the new password
+        const salt = await bcrypt.genSalt(10);
+        const hash = await bcrypt.hash(password, salt);
+
+        // Update the database
+        await User.findByIdAndUpdate(userId, {
+            password: hash
+        });
+
+        return res.status(200).json({ message: 'Password successfully reset' });
+
+    } catch (error) {
+        if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+            return res.status(400).json({ error: 'Invalid or expired token.' });
+        }
+        return res.status(500).json({ error: 'An error occurred while resetting password.' });
+    }
+}
+
 module.exports = {
     loginUser,
     signupUser,
@@ -332,5 +448,7 @@ module.exports = {
     getConnections,
     getIcon,
     getBanner,
-    getUsers
+    getUsers,
+    sendPasswordResetEmail,
+    resetPassword
 }
