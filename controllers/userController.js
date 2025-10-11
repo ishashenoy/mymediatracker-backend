@@ -1,6 +1,7 @@
 const User = require('../models/userModel');
 const jwt = require('jsonwebtoken');
-const mailjet = require('node-mailjet').connect(
+const Mailjet = require('node-mailjet');
+const mailjet = Mailjet.apiConnect(
     process.env.MAILJET_API_KEY,
     process.env.MAILJET_SECRET_KEY
 );
