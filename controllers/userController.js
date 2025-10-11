@@ -388,8 +388,6 @@ const sendPasswordResetEmail = async (req, res) => {
                 ]
             });
 
-        console.log('Mailjet response:', result.body); // Add this line
-
         return res.status(200).json({ message: 'Password reset email sent.' });
 
     } catch (error) {
