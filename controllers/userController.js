@@ -1,6 +1,9 @@
 const User = require('../models/userModel');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
+const mailjet = require('node-mailjet').connect(
+    process.env.MAILJET_API_KEY,
+    process.env.MAILJET_SECRET_KEY
+);
 const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const bcrypt = require('bcrypt');
@@ -357,32 +360,34 @@ const sendPasswordResetEmail = async (req, res) => {
                 : 'http://' // http is only allowed in development
         }${process.env.CLIENT_URL}/reset-password/${resetToken}`;
 
-        // Mailjet SMTP setup
-        const transporter = nodemailer.createTransport({
-            host: 'in-v3.mailjet.com',
-            port: 587,
-            auth: {
-                user: process.env.MAILJET_API_KEY,
-                pass: process.env.MAILJET_SECRET_KEY
-            }
-        });
+        const result = await mailjet
+            .post('send', { version: 'v3.1' })
+            .request({
+                Messages: [
+                    {
+                        From: {
+                            Email: "no-reply@yourdomain.com",
+                            Name: "MyMediaTracker Support"
+                        },
+                        To: [
+                            {
+                                Email: email,
+                                Name: user.username
+                            }
+                        ],
+                        Subject: "Password Reset Request",
+                        HTMLPart: `
+                            <p>Hello ${user.username},</p>
+                            <p>You requested to reset your password. Click the link below to choose a new password:</p>
+                            <a href="${resetLink}" target="_blank">Reset Password</a>
+                            <p>This link will expire in 15 minutes.</p>
+                            <p>If you did not request this, you can safely ignore this email.</p>
+                        `
+                    }
+                ]
+            });
 
-        await transporter.sendMail({
-            from: `"MyMediaTracker Support" <no-reply@yourdomain.com>`,
-            to: email,
-            subject: 'Password Reset Request',
-            html: `
-                <p>Hello ${user.username},</p>
-                <p>You requested to reset your password. Click the link below to choose a new password:</p>
-                <a href="${resetLink}" target="_blank">Reset Password</a>
-                <p>This link will expire in 15 minutes.</p>
-                <p>If you did not request this, you can safely ignore this email.</p>
-            `
-        });
-
-        return res.status(200).json({ 
-            message: 'Password reset email sent (for testing, check server logs for preview URL).' 
-        });
+        return res.status(200).json({ message: 'Password reset email sent.' });
 
     } catch (error) {
         console.error('Error sending reset email:', error);
