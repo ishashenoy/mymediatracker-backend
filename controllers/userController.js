@@ -186,49 +186,53 @@ const changeBanner = async (req, res) => {
 
     const user_id = req.user._id;
 
-    const user = await User.findOne({_id: user_id});
+    try{
+        const user = await User.findOne({_id: user_id});
 
-    // this is the sender's trusted user id 
-    // verified by the jwt token provided to our middleware
-    const senderId = req.user._id;
+        if (!(user._id.equals(user_id))) return res.status(401).json({error: 'Not authorized'});
 
-    if (!(user._id.equals(senderId))) return res.status(401).json({error: 'Not authorized'});
-
-    if (user.banners && user.banners.get(type_number)) {
-        const oldBannerUrl = user.banners.get(type_number);
-        const oldPublicId = oldBannerUrl.split('/').slice(-1)[0].split('.')[0];
-        await cloudinary.uploader.destroy(oldPublicId);
-    }
-
-    cloudinary.uploader.upload_stream(
-    { 
-        public_id: `banners/${user._id}_${type_number}`, // unique id per type_number
-        overwrite: true,
-        format: "webp",
-        transformation: [
-        { width: 1600, height: 200, crop: "fill" }, // image shouldn't exceed 1600x200
-        { quality: "auto:low", fetch_format: "auto" }, // compressing images as well
-        { effect: "improve" },
-        { dpr: "auto" },
-        { compression: "low" }
-    ]},
-    (error, result) => {
-        if (error){
-            return res.status(400).json({error: error})
-        }else{
-            if (!type_number ) return;
-
-            if (!user.banners) {
-                user.banners = new Map(); // initialize if missing
-            }
-
-            user.banners.set(type_number, result.secure_url);
-
-            user.save();
-
-            return res.status(200).json({ message: "Banner processed", image_url: result.secure_url});
+        if (user.banners && user.banners.get(type_number)) {
+            const oldBannerUrl = user.banners.get(type_number);
+            const oldPublicId = oldBannerUrl.split('/').slice(-1)[0].split('.')[0];
+            await cloudinary.uploader.destroy(oldPublicId).catch(() => {});
         }
-    }).end(req.file.buffer);
+
+        cloudinary.uploader.upload_stream(
+        { 
+            public_id: `banners/${user._id}_${type_number}`, // unique id per type_number
+            overwrite: true,
+            format: "webp",
+            transformation: [
+            { width: 1600, height: 200, crop: "fill" }, // image shouldn't exceed 1600x200
+            { quality: "auto:low", fetch_format: "auto" }, // compressing images as well
+            { effect: "improve" },
+            { dpr: "auto" },
+            { compression: "low" }
+        ]},
+        async (error, result) => {
+            if (error){
+                if (!res.headersSent){
+                    return res.status(400).json({ error: error.message || 'Upload failed' });
+                }
+            } else{
+                if (!type_number ) return;
+
+                if (!user.banners) {
+                    user.banners = new Map(); // initialize if missing
+                }
+
+                user.banners.set(type_number, result.secure_url);
+
+                await user.save();
+
+                return res.status(200).json({ message: "Banner processed", image_url: result.secure_url});
+            }
+        }).end(req.file.buffer);
+    } catch (error){
+        if (!res.headersSent){
+            res.status(500).json({ error: 'Failed to save banner' });
+        }
+    }
 }
 
 // get a list of all public users based on a search
