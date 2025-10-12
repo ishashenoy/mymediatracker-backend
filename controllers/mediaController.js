@@ -49,7 +49,6 @@ const getMedias = async (req,res) => {
 //GET media of a profile
 const getProfileMedia = async (req,res) => {
     const { username } = req.params;
-    console.log('error');
     try {
         const user = await User.findOne({ username });
 
@@ -151,11 +150,28 @@ const deleteMedia = async(req,res) => {
         return res.status(404).json({error: 'Media does not exist.'});
     }
 
-    const media = await Media.findOneAndDelete({_id: id, user_id : user_id});
+    const media = await Media.findOne({ _id: id, user_id });
 
     if (!media){
         return res.status(404).json({error: 'Media does not exist.'});
     }
+
+    // Delete image from Cloudinary if it exists
+    if (media.image_url) {
+        try {
+            // Extract the public_id safely from the URL
+            const publicIdWithExt = media.image_url.split('/').slice(-1)[0];
+            const publicId = publicIdWithExt.split('.')[0];
+
+            await cloudinary.uploader.destroy(publicId).catch(() => {});
+        } catch (err) {
+            console.error("Cloudinary deletion failed:", err.message);
+        }
+    }
+
+    // Delete document
+    await Media.deleteOne({ _id: id, user_id });
+
     res.status(200).json(media);
 }
 
@@ -181,6 +197,8 @@ const updateMedia = async (req, res) => {
 
 // Uploading media covers
 const uploadCover = async (req,res) => {
+    const user_id = req.user._id;
+
     if (!req.file) {
         return res.status(400).json({ error: 'No image file provided' });
     }
@@ -189,9 +207,13 @@ const uploadCover = async (req,res) => {
         return res.status(400).json({ error: 'File too large' });
     }
 
+    // Generating a random hash per image upload
+    const uniqueId = crypto.randomBytes(4).toString("hex");
+
     //Uploading the image to cloudinary storage
     return cloudinary.uploader.upload_stream(
     {
+        public_id: `banners/${user_id}_${uniqueId}`, // unique id for each media
         format: "webp",
         //Cropping the image to fit size limits
         transformation: [
