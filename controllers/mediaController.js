@@ -184,14 +184,25 @@ const uploadCover = async (req,res) => {
     if (!req.file) {
         return res.status(400).json({ error: 'No image file provided' });
     }
+
+    if (req.file.size > 5 * 1024 * 1024) { // 5MB limit
+        return res.status(400).json({ error: 'File too large' });
+    }
+
     //Uploading the image to cloudinary storage
     return cloudinary.uploader.upload_stream(
     {
         //Cropping the image to fit size limits
         transformation: [
-            { width: 300, height: 500, crop: "limit" }, // image shouldn't exceed 300x500
-            { quality: "auto:eco", fetch_format: "auto" } // compressing images as well
-        ]},
+            { width: 300, height: 500, crop: "fill" }, // cropping image
+            { quality: "auto:low", fetch_format: "auto" }, // optimize quality and reduce file size
+            { flags: "preserveTransparency" }, // maintain transparency
+            { format: "webp" }, //convert to webp
+            { effect: "improve" }, // apply contrast and sharpness
+            { dpr: "auto" }, // adjust image quality
+            { compression: "medium" }
+        ]
+    },
     (error, result) => {
         if (error){
             return res.status(400).json({error: error})

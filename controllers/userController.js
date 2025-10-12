@@ -133,9 +133,15 @@ const changeIcon = async (req, res) => {
         overwrite: true,
         //Cropping the image to fit size limits
         transformation: [
-        { width: 500, height: 500, crop: "limit" }, // image shouldn't exceed 500x500
-        { quality: "auto:eco", fetch_format: "auto" } // compressing images as well
-    ]},
+            { width: 500, height: 500, crop: "limit" }, // image shouldn't exceed 500x500
+            { quality: "auto:low", fetch_format: "auto" }, // compressing images as well
+            { format: "webp" },
+            { flags: "preserveTransparency" },
+            { effect: "improve" },
+            { dpr: "auto" },
+            { compression: "medium" }
+        ]
+    },
     (error, result) => {
         if (error){
             return res.status(400).json({error: error})
@@ -200,8 +206,13 @@ const changeBanner = async (req, res) => {
         public_id: `banners/${user._id}_${type_number}`, // unique id per type_number
         overwrite: true,
         transformation: [
-        { width: 1600, height: 200, crop: "limit" }, // image shouldn't exceed 1600x200
-        { quality: "auto:eco", fetch_format: "auto" } // compressing images as well
+        { width: 1600, height: 200, crop: "fill" }, // image shouldn't exceed 1600x200
+        { quality: "auto:low", fetch_format: "auto" }, // compressing images as well
+        { format: "webp" },
+        { flags: "preserveTransparency" },
+        { effect: "improve" },
+        { dpr: "auto" },
+        { compression: "low" }
     ]},
     (error, result) => {
         if (error){
