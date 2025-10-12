@@ -192,12 +192,11 @@ const uploadCover = async (req,res) => {
     //Uploading the image to cloudinary storage
     return cloudinary.uploader.upload_stream(
     {
+        format: "webp",
         //Cropping the image to fit size limits
         transformation: [
             { width: 300, height: 500, crop: "fill" }, // cropping image
             { quality: "auto:low", fetch_format: "auto" }, // optimize quality and reduce file size
-            { flags: "preserveTransparency" }, // maintain transparency
-            { format: "webp" }, //convert to webp
             { effect: "improve" }, // apply contrast and sharpness
             { dpr: "auto" }, // adjust image quality
             { compression: "medium" }
