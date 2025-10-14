@@ -160,10 +160,12 @@ const deleteMedia = async(req,res) => {
     if (media.image_url) {
         try {
             // Extract the public_id safely from the URL
-            const publicIdWithExt = media.image_url.split('/').slice(-1)[0];
-            const publicId = publicIdWithExt.split('.')[0];
+            const match = media.image_url.match(/upload\/(?:v\d+\/)?(.+)\.[^.]+$/);
+            const publicId = match ? match[1] : null;
 
-            await cloudinary.uploader.destroy(publicId).catch(() => {});
+            if (publicId) {
+                await cloudinary.uploader.destroy(publicId).catch(() => {});
+            }
         } catch (err) {
             console.error("Cloudinary deletion failed:", err.message);
         }
