@@ -18,8 +18,14 @@ const authLimiter = rateLimit({
   message: "Too many requests. Try again later."
 });
 
+const passResetLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000, // 5 minutes
+  max: 3, // 3 requests per window
+  message: "Too many requests. Try again later."
+});
+
 //controller functions
-const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getBanner, getUsers} = require('../controllers/userController');
+const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getBanner, getUsers, sendPasswordResetEmail, resetPassword} = require('../controllers/userController');
 
 const router = express.Router();
 
@@ -58,5 +64,11 @@ router.get('/:username/connections', limiter, requireAuth, getConnections);
 //This route below can be seen without having an account
 // get icon
 router.get('/:username/icon', limiter, getIcon);
+
+// This route is for password recovery - sending the email
+router.post('/forgot-password', passResetLimiter, sendPasswordResetEmail);
+
+// This route is for password recovery - resetting the password
+router.post('/reset-password/:token', passResetLimiter, resetPassword);
 
 module.exports = router;
