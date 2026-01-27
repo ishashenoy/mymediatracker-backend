@@ -20,38 +20,44 @@ const createToken = (_id) => {
 }
 
 const verifyRecaptcha = async (token) => {
-    const secret = process.env.RECAPTCHA_SECRET_KEY;
+  const secret = process.env.RECAPTCHA_SECRET_KEY;
+  try {
     const response = await axios.post(
-        `https://www.google.com/recaptcha/api/siteverify?secret=${secret}&response=${token}`
+      `https://www.google.com/recaptcha/api/siteverify`,
+      null,
+      {
+        params: { secret, response: token },
+        timeout: 5000 // optional: 5s timeout
+      }
     );
     return response.data.success;
+  } catch (err) {
+    console.error("reCAPTCHA verification error:", err.message);
+    return false; // treat as failed verification
+  }
 };
 
-// login user
+// LOGIN
 const loginUser = async (req, res) => {
-    const {email, password, recaptchaToken} = req.body;
+  const { email, password, recaptchaToken } = req.body;
 
-    if (!recaptchaToken) {
-        return res.status(400).json({ error: 'reCAPTCHA token is missing.' });
-    }
+  if (!recaptchaToken) {
+    return res.status(400).json({ error: 'reCAPTCHA token is missing.' });
+  }
 
-    const isHuman = await verifyRecaptcha(recaptchaToken);
-    if (!isHuman) {
-        return res.status(400).json({ error: 'reCAPTCHA verification failed.\n Please refresh the page and try again.' });
-    }
+  const isHuman = await verifyRecaptcha(recaptchaToken);
+  if (!isHuman) {
+    return res.status(400).json({ error: 'reCAPTCHA verification failed. Please refresh and try again.' });
+  }
 
-    try {
-        const user = await User.login(email, password);
-
-        //create a token
-        const token = createToken(user._id);
-        const username = user.username;
-
-        return res.status(200).json({username, token});
-    } catch (error) {
-        return res.status(400).json({error: error.message});
-    }
-}
+  try {
+    const user = await User.login(email, password);
+    const token = createToken(user._id);
+    return res.status(200).json({ username: user.username, token });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+};
 
 // GET user's connections list
 const getConnections = async (req, res) => {
@@ -112,47 +118,60 @@ const changePrivacy = async (req, res) => {
 // change user icon
 const changeIcon = async (req, res) => {
     const { username } = req.params; // this is the current page's username
-    const user = await User.findOne({username: username});
 
-    // this is the sender's trusted user id 
-    // verified by the jwt token provided to our middleware
-    const senderId = req.user._id;
+    try {
+        const user = await User.findOne({ username: username });
+        if (!user) return res.status(404).json({ error: "User not found" });
 
-    if (!(user._id.equals(senderId))) return res.status(401).json({error: 'Not authorized'});
+        // this is the sender's trusted user id verified by the JWT
+        const senderId = req.user._id;
+        if (!user._id.equals(senderId)) return res.status(401).json({ error: "Not authorized" });
 
-    if (user.icon) {
-        // This id will allow us to replace images and delete unused ones.
-        const oldPublicId = user.icon.split('/').slice(-1)[0].split('.')[0]; // extract public_id from URL
-        await cloudinary.uploader.destroy(oldPublicId);
-    }
-
-    //Uploading the image to cloudinary storage
-    return cloudinary.uploader.upload_stream(
-    { 
-        public_id: `icons/${user._id}`, // give a unique id for this user's icon
-        overwrite: true,
-        //Cropping the image to fit size limits
-        format: "webp",
-        transformation: [
-            { width: 500, height: 500, crop: "fill" },
-            { quality: "auto:low", fetch_format: "auto" }, // compressing images as well
-            { effect: "improve" },
-            { dpr: "auto" },
-            { compression: "medium" }
-        ]
-    },
-    (error, result) => {
-        if (error){
-            return res.status(400).json({error: error})
-        }else{
-            //Saving the image url to mongo db
-            user.icon = result.secure_url;
-            user.save();
-            return res.status(200).json({ message: "Icon processed", image_url: result.secure_url});
+        // Delete old icon if it exists
+        if (user.icon) {
+            const oldPublicId = user.icon.split('/').slice(-1)[0].split('.')[0]; // extract public_id from URL
+            await cloudinary.uploader.destroy(oldPublicId).catch(() => {}); // ignore errors
         }
-    }).end(req.file.buffer);
-}
 
+        // Wrap Cloudinary upload in a promise
+        const uploadIcon = () =>
+            new Promise((resolve, reject) => {
+                cloudinary.uploader.upload_stream(
+                    {
+                        public_id: `icons/${user._id}`, // unique id for this user's icon
+                        overwrite: true,
+                        format: "webp",
+                        transformation: [
+                            { width: 500, height: 500, crop: "fill" },
+                            { quality: "auto:low", fetch_format: "auto" },
+                            { effect: "improve" },
+                            { dpr: "auto" },
+                            { compression: "medium" }
+                        ]
+                    },
+                    (error, result) => {
+                        if (error) reject(error);
+                        else resolve(result);
+                    }
+                ).end(req.file.buffer);
+            });
+
+        // Wait for the upload to finish
+        const result = await uploadIcon();
+
+        // Save new icon URL in DB
+        user.icon = result.secure_url;
+        await user.save();
+
+        // Send response once
+        return res.status(200).json({ message: "Icon processed", image_url: result.secure_url });
+
+    } catch (error) {
+        if (!res.headersSent) {
+            return res.status(500).json({ error: error.message || "Failed to process icon" });
+        }
+    }
+};
 
 // GET user's banners
 const getBanner = async (req, res) => {
@@ -180,16 +199,13 @@ const getBanner = async (req, res) => {
     return res.status(200).json(banners);
 }
 
-// change user's banner for a media page
 const changeBanner = async (req, res) => {
-    const { type_number  } = req.params; // this is the type of media
-
+    const { type_number } = req.params;
     const user_id = req.user._id;
 
-    try{
-        const user = await User.findOne({_id: user_id});
-
-        if (!(user._id.equals(user_id))) return res.status(401).json({error: 'Not authorized'});
+    try {
+        const user = await User.findById(user_id);
+        if (!user) return res.status(404).json({ error: "User not found" });
 
         if (user.banners && user.banners.get(type_number)) {
             const oldBannerUrl = user.banners.get(type_number);
@@ -197,43 +213,42 @@ const changeBanner = async (req, res) => {
             await cloudinary.uploader.destroy(oldPublicId).catch(() => {});
         }
 
-        cloudinary.uploader.upload_stream(
-        { 
-            public_id: `banners/${user._id}_${type_number}`, // unique id per type_number
-            overwrite: true,
-            format: "webp",
-            transformation: [
-            { width: 1600, height: 200, crop: "fill" }, // image shouldn't exceed 1600x200
-            { quality: "auto:low", fetch_format: "auto" }, // compressing images as well
-            { effect: "improve" },
-            { dpr: "auto" },
-            { compression: "low" }
-        ]},
-        async (error, result) => {
-            if (error){
-                if (!res.headersSent){
-                    return res.status(400).json({ error: error.message || 'Upload failed' });
-                }
-            } else{
-                if (!type_number ) return;
+        // Wrap Cloudinary upload in a promise
+        const uploadBanner = () =>
+            new Promise((resolve, reject) => {
+                cloudinary.uploader.upload_stream(
+                    {
+                        public_id: `banners/${user._id}_${type_number}`,
+                        overwrite: true,
+                        format: "webp",
+                        transformation: [
+                            { width: 1600, height: 200, crop: "fill" },
+                            { quality: "auto:low", fetch_format: "auto" },
+                            { effect: "improve" },
+                            { dpr: "auto" },
+                            { compression: "low" }
+                        ]
+                    },
+                    (error, result) => {
+                        if (error) reject(error);
+                        else resolve(result);
+                    }
+                ).end(req.file.buffer);
+            });
 
-                if (!user.banners) {
-                    user.banners = new Map(); // initialize if missing
-                }
+        const result = await uploadBanner();
 
-                user.banners.set(type_number, result.secure_url);
+        if (!user.banners) user.banners = new Map();
+        user.banners.set(type_number, result.secure_url);
+        await user.save();
 
-                await user.save();
-
-                return res.status(200).json({ message: "Banner processed", image_url: result.secure_url});
-            }
-        }).end(req.file.buffer);
-    } catch (error){
-        if (!res.headersSent){
-            res.status(500).json({ error: 'Failed to save banner' });
+        return res.status(200).json({ message: "Banner processed", image_url: result.secure_url });
+    } catch (error) {
+        if (!res.headersSent) {
+            return res.status(500).json({ error: error.message || "Upload failed" });
         }
     }
-}
+};
 
 // get a list of all public users based on a search
 const getUsers = async (req,res) => {
@@ -316,30 +331,27 @@ const unfollowRequest = async (req, res) => {
     }
 }
 
-// signup user
+// SIGNUP
 const signupUser = async (req, res) => {
-    const {email, password, username, recaptchaToken} = req.body;
+  const { email, password, username, recaptchaToken } = req.body;
 
-    if (!recaptchaToken) {
-        return res.status(400).json({ error: 'reCAPTCHA token is missing.' });
-    }
+  if (!recaptchaToken) {
+    return res.status(400).json({ error: 'reCAPTCHA token is missing.' });
+  }
 
-    const isHuman = await verifyRecaptcha(recaptchaToken);
-    if (!isHuman) {
-        return res.status(400).json({ error: 'reCAPTCHA verification failed.\n Please refresh the page and try again.' });
-    }
+  const isHuman = await verifyRecaptcha(recaptchaToken);
+  if (!isHuman) {
+    return res.status(400).json({ error: 'reCAPTCHA verification failed. Please refresh and try again.' });
+  }
 
-    try {
-        const user = await User.signup(email, password, username);
-
-        //create a token
-        const token = createToken(user._id);
-
-        res.status(200).json({username, token});
-    } catch (error) {
-        res.status(400).json({error: error.message});
-    }
-}
+  try {
+    const user = await User.signup(email, password, username);
+    const token = createToken(user._id);
+    return res.status(200).json({ username, token });
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+};
 
 const sendPasswordResetEmail = async (req, res) => {
     const { email, recaptchaToken } = req.body;
