@@ -19,21 +19,6 @@ cloudinary.config({
     cloudinary_url: process.env.CLOUDINARY_URL
 });
 
-// This function will help us generate slugs
-function generateHash(str) {
-    if (!str) return crypto.randomBytes(3).toString("hex");
-    return crypto.createHash("md5").update(str).digest("hex").slice(0, 6);
-}
-
-function generateSlug(name, imageUrl) {
-    // Only take the first 50 chars of the name, converted to a clean slug
-    const base = slugify(name || "untitled", { lower: true, strict: true }).slice(0, 50);
-    // Generate a hash based on the image URL or name
-    const hash = generateHash(imageUrl || name);
-    // Combine them, e.g., "drawing-closer-4394b0"
-    return `${base}-${hash}`;
-}
-
 //GET all media
 const getMedias = async (req,res) => {
     const user_id = req.user._id;
@@ -123,14 +108,12 @@ const getTrendingMedia = async (req,res) => {
 
 //POST a new media
 const createMedia = async (req,res) => {
-    const { name, image_url, progress, type, rating, status } = req.body;
+    const { name, image_url, progress, type, rating, status, media_id } = req.body;
 
     // Validating the request
     if (!name || !type) {
         return res.status(400).json({ error: "Name and type are required." });
     }
-
-    const media_id = generateSlug(name, image_url);
 
     // add doc to db
     try {
