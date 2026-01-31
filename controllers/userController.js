@@ -21,19 +21,24 @@ const createToken = (_id) => {
 
 const verifyRecaptcha = async (token) => {
   const secret = process.env.RECAPTCHA_SECRET_KEY;
+
   try {
     const response = await axios.post(
-      `https://www.google.com/recaptcha/api/siteverify`,
-      null,
+      "https://www.google.com/recaptcha/api/siteverify",
+      new URLSearchParams({
+        secret,
+        response: token,
+      }).toString(),
       {
-        params: { secret, response: token },
-        timeout: 5000 // optional: 5s timeout
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        timeout: 5000,
       }
     );
-    return response.data.success;
+    return response.data.success === true;
   } catch (err) {
-    console.error("reCAPTCHA verification error:", err.message);
-    return false; // treat as failed verification
+    return false;
   }
 };
 
