@@ -21,20 +21,6 @@ const createToken = (_id) => {
 
 const verifyRecaptcha = async (token) => {
   const secret = process.env.RECAPTCHA_SECRET_KEY;
-  
-  console.log('🔍 reCAPTCHA Debug Info:');
-  console.log('Token received:', token ? `${token.substring(0, 20)}...` : 'NULL');
-  console.log('Secret key configured:', secret ? 'YES' : 'NO');
-  
-  if (!secret) {
-    console.error('❌ RECAPTCHA_SECRET_KEY environment variable is not set');
-    return false;
-  }
-  
-  if (!token) {
-    console.error('❌ reCAPTCHA token is missing');
-    return false;
-  }
 
   try {
     const response = await axios.post(
@@ -50,23 +36,8 @@ const verifyRecaptcha = async (token) => {
         timeout: 5000,
       }
     );
-    
-    console.log('🌐 Google reCAPTCHA Response:');
-    console.log('Success:', response.data.success);
-    console.log('Error codes:', response.data['error-codes']);
-    console.log('Score:', response.data.score);
-    console.log('Action:', response.data.action);
-    console.log('Challenge timestamp:', response.data.challenge_ts);
-    console.log('Hostname:', response.data.hostname);
-    
-    if (!response.data.success) {
-      console.error('❌ reCAPTCHA verification failed with error codes:', response.data['error-codes']);
-    }
-    
     return response.data.success === true;
   } catch (err) {
-    console.error('❌ reCAPTCHA verification network error:', err.message);
-    console.error('Error response:', err.response?.data || err);
     return false;
   }
 };
@@ -75,26 +46,20 @@ const verifyRecaptcha = async (token) => {
 const loginUser = async (req, res) => {
   const { email, password, recaptchaToken } = req.body;
 
-  console.log('🔐 Login attempt:', { email, hasToken: !!recaptchaToken });
-
   if (!recaptchaToken) {
-    console.log('❌ Login failed: Missing reCAPTCHA token');
     return res.status(400).json({ error: 'reCAPTCHA token is missing.' });
   }
 
   const isHuman = await verifyRecaptcha(recaptchaToken);
   if (!isHuman) {
-    console.log('❌ Login failed: reCAPTCHA verification failed');
     return res.status(400).json({ error: 'reCAPTCHA verification failed. Please refresh and try again.' });
   }
 
   try {
     const user = await User.login(email, password);
     const token = createToken(user._id);
-    console.log('✅ Login successful:', { username: user.username, userId: user._id });
     return res.status(200).json({ username: user.username, token });
   } catch (err) {
-    console.log('❌ Login failed during user authentication:', err.message);
     return res.status(400).json({ error: err.message });
   }
 };
@@ -375,26 +340,20 @@ const unfollowRequest = async (req, res) => {
 const signupUser = async (req, res) => {
   const { email, password, username, recaptchaToken } = req.body;
 
-  console.log('📝 Signup attempt:', { email, username, hasToken: !!recaptchaToken });
-
   if (!recaptchaToken) {
-    console.log('❌ Signup failed: Missing reCAPTCHA token');
     return res.status(400).json({ error: 'reCAPTCHA token is missing.' });
   }
 
   const isHuman = await verifyRecaptcha(recaptchaToken);
   if (!isHuman) {
-    console.log('❌ Signup failed: reCAPTCHA verification failed');
     return res.status(400).json({ error: 'reCAPTCHA verification failed. Please refresh and try again.' });
   }
 
   try {
     const user = await User.signup(email, password, username);
     const token = createToken(user._id);
-    console.log('✅ Signup successful:', { username, userId: user._id });
     return res.status(200).json({ username, token });
   } catch (err) {
-    console.log('❌ Signup failed during user creation:', err.message);
     return res.status(400).json({ error: err.message });
   }
 };
