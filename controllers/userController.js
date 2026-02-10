@@ -255,21 +255,31 @@ const changeBanner = async (req, res) => {
     }
 };
 
-// get a list of all public users based on a search
-const getUsers = async (req,res) => {
-    const username = req.query.username;
+// Search for users by username or email (partial, case-insensitive)
+const searchUsers = async (req, res) => {
+    const { q } = req.query;
+
+    if (!q || q.trim().length === 0) {
+        return res.status(400).json({ error: "Search query is required." });
+    }
+
+    const query = q.trim();
 
     try {
-        const users = await User.find({username: username});
+        // Search by username or email (partial, case-insensitive)
+        const users = await User.find({ username: { $regex: query, $options: 'i' }})
+        .select('username icon private')
+        .limit(20);
 
-        const user_info = {
-            username: username,
-            icon_url: users?.image_url
-        }
+        const results = users.map(u => ({
+            username: u.username,
+            icon: u.icon || null,
+            private: u.private
+        }));
 
-        return users ? res.status(200).json(user_info) : res.status(404).json({error: "User not found."});
-    }catch (error) {
-        res.status(400).json({error: error.message});
+        return res.status(200).json(results);
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
     }
 }
 
@@ -284,23 +294,31 @@ const followRequest = async (req, res) => {
     const senderUser = await User.findOne({ _id: senderId });
     const senderUsername = senderUser.username;
 
-    try{
-        // Update the receivers follower list
-        const receivingUser = await User.findOneAndUpdate({ username: username}, {
-            $addToSet: { followers: senderUsername  }
-        });
+    // Prevent self-follow
+    if (senderUsername === username) {
+        return res.status(400).json({ error: "You cannot follow yourself." });
+    }
 
-        // checking if the receiving user exists.
+    try{
+        // Check if receiver exists first
+        const receivingUser = await User.findOne({ username: username });
         if (!receivingUser) return res.status(404).json({error: 'User does not exist.'});
 
-        // Checking if the users are already following each other.
-        if (receivingUser.followers.includes(username)) return res.status(200).json({ message: "Already following!" });
+        // Checking if already following (duplicate prevention)
+        if (receivingUser.followers && receivingUser.followers.includes(senderUsername)) {
+            return res.status(200).json({ message: "Already following!" });
+        }
+
+        // Update the receivers follower list
+        await User.findOneAndUpdate({ username: username}, {
+            $addToSet: { followers: senderUsername  }
+        });
         
         //Update the senders following list
         await User.findOneAndUpdate({ username: senderUsername}, {
             $addToSet: { following: username }
         });
-        res.status(200).json({ message: "Follow succesfull!" });
+        res.status(200).json({ message: "Follow successful!" });
     } catch (error) {
         return res.status(500).json({error: 'Internal server error.'});
     }
@@ -481,7 +499,7 @@ module.exports = {
     getConnections,
     getIcon,
     getBanner,
-    getUsers,
+    searchUsers,
     sendPasswordResetEmail,
     resetPassword
 }

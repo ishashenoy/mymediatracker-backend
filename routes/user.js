@@ -25,7 +25,7 @@ const passResetLimiter = rateLimit({
 });
 
 //controller functions
-const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getBanner, getUsers, sendPasswordResetEmail, resetPassword} = require('../controllers/userController');
+const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getBanner, searchUsers, sendPasswordResetEmail, resetPassword} = require('../controllers/userController');
 
 const router = express.Router();
 
@@ -35,15 +35,15 @@ router.post('/login', authLimiter, loginUser);
 // signup route
 router.post('/signup', authLimiter, signupUser);
 
+// Search users (must be before /:username routes to avoid shadowing)
+router.get('/search', limiter, requireAuth, searchUsers);
+
 // follow request route
 // the username is of the receiving user
 router.patch('/:username/follow', limiter, requireAuth, followRequest);
 
 // get banners
 router.get('/banners', limiter, requireAuth, getBanner);
-
-//GET all users
-router.get('/:username', limiter, getUsers);
 
 // unfollow request route
 // the username is of the receiving user

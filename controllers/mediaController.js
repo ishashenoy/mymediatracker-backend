@@ -15,9 +15,25 @@ const mongoose = require('mongoose');
 
 const cloudinary = require('cloudinary').v2;
 
+
 cloudinary.config({
     cloudinary_url: process.env.CLOUDINARY_URL
 });
+
+// This function will help us generate slugs
+function generateHash(str) {
+    if (!str) return crypto.randomBytes(3).toString("hex");
+    return crypto.createHash("md5").update(str).digest("hex").slice(0, 6);
+}
+
+function generateSlug(name, imageUrl) {
+    // Only take the first 50 chars of the name, converted to a clean slug
+    const base = slugify(name || "untitled", { lower: true, strict: true }).slice(0, 50);
+    // Generate a hash based on the image URL or name
+    const hash = generateHash(imageUrl || name);
+    // Combine them, e.g., "drawing-closer-4394b0"
+    return `${base}-${hash}`;
+}
 
 //GET all media
 const getMedias = async (req,res) => {
@@ -45,14 +61,41 @@ const getProfileMedia = async (req,res) => {
         const user_id = user._id;
         const privacy = user.private;
 
-        // public profile
+        // public profile — anyone can view
         if (!privacy) {
             const profileMedia = await Media.find({ user_id }).sort({ status: 1 });
             return res.status(200).json({ watchList: profileMedia, private: privacy });
         }
 
-        // private profile
-        return res.status(403).json({ error: "This account is private" });
+        // private profile — check if viewer is a follower
+        // Try to identify the viewer from an optional auth header
+        const { authorization } = req.headers;
+        if (authorization) {
+            try {
+                const jwt = require('jsonwebtoken');
+                const token = authorization.split(' ')[1];
+                const { _id } = jwt.verify(token, process.env.SECRET);
+                const viewer = await User.findOne({ _id }).select('username');
+
+                if (viewer) {
+                    // Allow if viewer is the profile owner
+                    if (viewer.username === username) {
+                        const profileMedia = await Media.find({ user_id }).sort({ status: 1 });
+                        return res.status(200).json({ watchList: profileMedia, private: privacy });
+                    }
+                    // Allow if viewer is a follower of this private profile
+                    if (user.followers && user.followers.includes(viewer.username)) {
+                        const profileMedia = await Media.find({ user_id }).sort({ status: 1 });
+                        return res.status(200).json({ watchList: profileMedia, private: privacy });
+                    }
+                }
+            } catch (err) {
+                // Invalid token — treat as unauthenticated viewer
+            }
+        }
+
+        // private profile and viewer is not a follower (or not logged in)
+        return res.status(403).json({ error: "This account is private", private: true });
     } catch (error){
         return res.status(500).json({ error: error.message });
     }
@@ -117,7 +160,14 @@ const createMedia = async (req,res) => {
     // add doc to db
     try {
         const user_id = req.user._id;
-        const media = await Media.create({ name, image_url, progress, type, rating, status, user_id, media_id });
+        
+        // Generate backup slug if media_id is empty or undefined
+        let finalMediaId = media_id;
+        if (!media_id || media_id.trim() === '') {
+            finalMediaId = generateSlug(name, image_url);
+        }
+        
+        const media = await Media.create({ name, image_url, progress, type, rating, status, user_id, media_id: finalMediaId });
         res.status(200).json(media);
     } catch (error){
         res.status(400).json({error: error.message});
@@ -231,13 +281,22 @@ const importMedia = async (req,res) => {
     handle = String(handle || "").trim();
     
 
-    // Validate handle is ONLY numerical
-    if (!/^\d+$/.test(handle)) {
-        return res.status(400).json({ error: "Invalid handle. Must be a number." });
+    // Validate handle based on source
+    if (source === 'goodreads') {
+        // Goodreads requires numeric user ID
+        if (!/^\d+$/.test(handle)) {
+            return res.status(400).json({ error: "Invalid Goodreads handle. Must be a number." });
+        }
+        // safe conversion to int for Goodreads
+        handle = parseInt(handle, 10);
+    } else if (source === 'letterboxd') {
+        // Letterboxd requires username (alphanumeric, hyphens, underscores)
+        if (!/^[a-zA-Z0-9_-]+$/.test(handle)) {
+            return res.status(400).json({ error: "Invalid Letterboxd username. Must contain only letters, numbers, hyphens, and underscores." });
+        }
+    } else {
+        return res.status(400).json({ error: "Unsupported source" });
     }
-
-    // safe conversion to int
-    handle = parseInt(handle, 10);
 
     //getting the user's verified id attached by middleware in req
     const user_id = req.user._id;
@@ -247,7 +306,9 @@ const importMedia = async (req,res) => {
     let url;
     if (source==='goodreads'){
         url = "https://www.goodreads.com/review/list_rss/"+handle;
-    }else {
+    } else if (source==='letterboxd'){
+        url = `https://letterboxd.com/${handle}/rss/`;
+    } else {
         return res.status(400).json({ error: "Unsupported source" });
     }
 
@@ -276,27 +337,53 @@ const importMedia = async (req,res) => {
 
 
         for (const item of items) {
-            const name = unwrap(item.title);
-            const image_url = unwrap(item.book_large_image_url);
-            const progress = "";
-            const rating = String(item.user_rating || '0');
+            let name, image_url, progress, rating, type, status;
 
-            let type;
-            switch (source){
-                case "goodreads":
-                    type='book';
-                    break;
-                default:
-                    return res.status(400).json({error: 'Something went wrong.'});
-            }
+            if (source === 'goodreads') {
+                name = unwrap(item.title);
+                image_url = unwrap(item.book_large_image_url);
+                progress = "";
+                rating = String(item.user_rating || '0');
+                type = 'book';
 
-            let status;
-            if (item.user_shelves.includes("to-read")) {
-                status = "to-do";
-            } else if (item.user_shelves.includes("currently-reading")) {
-                status = "doing";
-            } else {
-                status = "done";
+                if (item.user_shelves.includes("to-read")) {
+                    status = "to-do";
+                } else if (item.user_shelves.includes("currently-reading")) {
+                    status = "doing";
+                } else {
+                    status = "done";
+                }
+            } else if (source === 'letterboxd') {
+                // Letterboxd RSS format
+                name = unwrap(item.title);
+                
+                // Letterboxd includes images in the description, we need to extract it
+                const description = unwrap(item.description) || "";
+                const imgMatch = description.match(/<img[^>]+src="([^"]*)"[^>]*>/);
+                image_url = imgMatch ? imgMatch[1] : "";
+                
+                progress = "";
+                
+                // Letterboxd includes rating in the title or description
+                const ratingMatch = name.match(/★+/) || description.match(/★+/);
+                if (ratingMatch) {
+                    rating = String(ratingMatch[0].length); // Count the stars
+                } else {
+                    rating = '0';
+                }
+                
+                type = 'movie';
+                
+                // Letterboxd entries are typically movies that have been watched
+                // We can check the description for "Watched" vs "Want to watch"
+                if (description.includes("Want to watch") || description.includes("Watchlist")) {
+                    status = "to-do";
+                } else {
+                    status = "done"; // Most Letterboxd entries are watched movies
+                }
+                
+                // Clean up the title by removing rating stars and extra text
+                name = name.replace(/★+/g, '').replace(/\s*\(\d{4}\).*/, '').trim();
             }
 
             const media_id = generateSlug(name, image_url);
