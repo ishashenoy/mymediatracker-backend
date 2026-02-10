@@ -163,8 +163,11 @@ const createMedia = async (req,res) => {
         
         // Generate backup slug if media_id is empty or undefined
         let finalMediaId = media_id;
-        if (!media_id || media_id.trim() === '') {
+        const mediaIdStr = String(media_id ?? '').trim();
+        if (!mediaIdStr) {
             finalMediaId = generateSlug(name, image_url);
+        } else {
+            finalMediaId = mediaIdStr;
         }
         
         const media = await Media.create({ name, image_url, progress, type, rating, status, user_id, media_id: finalMediaId });
