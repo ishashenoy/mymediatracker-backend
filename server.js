@@ -13,7 +13,7 @@ const cors = require('cors');
 
 const corsOptions = {
   origin: [ // REMEMBER: change when domain name is changed
-    'https://mymediatracker.app', 
+    'https://mytria.app', 
     'http://localhost:3000'
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],

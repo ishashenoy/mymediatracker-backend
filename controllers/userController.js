@@ -416,7 +416,7 @@ const sendPasswordResetEmail = async (req, res) => {
                     {
                         From: {
                             Email: "mymediatracker.help@gmail.com",
-                            Name: "MyMediaTracker Support"
+                            Name: "Mytria (formerly MyMediaTracker) Support"
                         },
                         To: [
                             {
