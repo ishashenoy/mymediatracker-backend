@@ -227,7 +227,7 @@ const changeBanner = async (req, res) => {
                         overwrite: true,
                         format: "webp",
                         transformation: [
-                            { width: 1600, height: 200, crop: "fill" },
+                            { width: 1000, height: 1000, crop: "fill" },
                             { quality: "auto:low", fetch_format: "auto" },
                             { effect: "improve" },
                             { dpr: "auto" },
