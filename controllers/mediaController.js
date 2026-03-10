@@ -129,12 +129,60 @@ const getTrendingMedia = async (req,res) => {
                     _id: 0,
                     name: "$_id.name",
                     type: "$_id.type",
+                    media_id: {
+                        $ifNull: [
+                            "$sampleDoc.media_id",
+                            {
+                                $concat: [
+                                    {
+                                        $substrBytes: [
+                                            {
+                                                $replaceAll: {
+                                                    input: { $toLower: "$sampleDoc.name" },
+                                                    find: " ",
+                                                    replacement: "-"
+                                                }
+                                            },
+                                            0,
+                                            50
+                                        ]
+                                    },
+                                    "-",
+                                    { $substrBytes: [{ $toString: "$sampleDoc._id" }, 0, 6] }
+                                ]
+                            }
+                        ]
+                    },
                     count: 1,
                     sampleDoc: {
                         _id: "$sampleDoc._id",
                         name: "$sampleDoc.name",
                         type: "$sampleDoc.type",
-                        image_url: "$sampleDoc.image_url"
+                        image_url: "$sampleDoc.image_url",
+                        media_id: {
+                            $ifNull: [
+                                "$sampleDoc.media_id",
+                                {
+                                    $concat: [
+                                        {
+                                            $substrBytes: [
+                                                {
+                                                    $replaceAll: {
+                                                        input: { $toLower: "$sampleDoc.name" },
+                                                        find: " ",
+                                                        replacement: "-"
+                                                    }
+                                                },
+                                                0,
+                                                50
+                                            ]
+                                        },
+                                        "-",
+                                        { $substrBytes: [{ $toString: "$sampleDoc._id" }, 0, 6] }
+                                    ]
+                                }
+                            ]
+                        }
                     }
                 }
             }
