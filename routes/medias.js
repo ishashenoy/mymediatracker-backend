@@ -10,6 +10,7 @@ const {
     uploadCover
 } = require('../controllers/mediaController')
 const requireAuth = require('../middleware/requireAuth');
+const maintenanceMode = require('../middleware/maintenanceMode');
 const rateLimit = require('express-rate-limit');
 
 const multer = require('multer');
@@ -40,18 +41,18 @@ router.use(requireAuth);
 router.get('/', getMedias);
 
 //POST a new media
-router.post('/', createMedia);
+router.post('/', maintenanceMode, createMedia);
 
 //DELETE a media
-router.delete('/:id', deleteMedia);
+router.delete('/:id', maintenanceMode, deleteMedia);
 
 //UPDATE a media
-router.patch('/:id', updateMedia);
+router.patch('/:id', maintenanceMode, updateMedia);
 
 // IMPORT (POST) media(s) from other website
-router.post('/import/:source', importMedia);
+router.post('/import/:source', maintenanceMode, importMedia);
 
 // upload a media cover
-router.post('/image', limiter, requireAuth, upload.single('image'), uploadCover);
+router.post('/image', limiter, requireAuth, maintenanceMode, upload.single('image'), uploadCover);
 
 module.exports = router;

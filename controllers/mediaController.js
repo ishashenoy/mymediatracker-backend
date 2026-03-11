@@ -7,6 +7,7 @@ const crypto = require("crypto");
 
 const Media = require('../models/mediaModel');
 const User = require('../models/userModel');
+const { createFeedActivity, checkMilestones } = require('../controllers/feedController');
 
 const NodeCache = require('node-cache');
 const trendingCache = new NodeCache({ stdTTL: 86400 });
@@ -33,6 +34,29 @@ function generateSlug(name, imageUrl) {
     const hash = generateHash(imageUrl || name);
     // Combine them, e.g., "drawing-closer-4394b0"
     return `${base}-${hash}`;
+}
+
+// Helper to safely normalise and validate progress values
+// Accepts numbers or numeric strings, returns a normalised string or null for "no progress".
+// Throws an Error if the value is not a safe non-negative integer.
+function normalizeProgress(rawProgress) {
+    if (rawProgress === undefined || rawProgress === null || rawProgress === '') {
+        return '';
+    }
+
+    const str = String(rawProgress).trim();
+
+    // Allow only non-negative integers
+    if (!/^\d+$/.test(str)) {
+        throw new Error('Progress must be a non-negative whole number');
+    }
+
+    // Avoid absurdly large values
+    if (str.length > 9) { // > 999,999,999
+        throw new Error('Progress value is too large');
+    }
+
+    return str;
 }
 
 //GET all media
@@ -217,8 +241,23 @@ const createMedia = async (req,res) => {
         } else {
             finalMediaId = mediaIdStr;
         }
+
+        // Normalise and validate progress (numeric-only, optional)
+        let safeProgress = '';
+        try {
+            safeProgress = normalizeProgress(progress);
+        } catch (err) {
+            return res.status(400).json({ error: err.message });
+        }
+
+        const media = await Media.create({ name, image_url, progress: safeProgress, type, rating, status, user_id, media_id: finalMediaId });
         
-        const media = await Media.create({ name, image_url, progress, type, rating, status, user_id, media_id: finalMediaId });
+        // Create feed activity for adding media
+        await createFeedActivity(user_id, 'added_media', media._id);
+        
+        // Check for milestones
+        await checkMilestones(user_id);
+        
         res.status(200).json(media);
     } catch (error){
         res.status(400).json({error: error.message});
@@ -270,12 +309,42 @@ const updateMedia = async (req, res) => {
         return res.status(404).json({error: 'Media does not exist.'});
     }
 
-    const media = await Media.findOneAndUpdate({_id: id, user_id : user_id}, {
-        ...req.body
-    });
-
-    if (!media){
+    // Get old media before update
+    const oldMedia = await Media.findOne({ _id: id, user_id });
+    if (!oldMedia) {
         return res.status(404).json({error: 'Media does not exist.'});
+    }
+
+    const incoming = req.body || {};
+
+    // Whitelist updatable fields to avoid accidental/malicious writes
+    const updates = {};
+    if (incoming.name !== undefined) updates.name = incoming.name;
+    if (incoming.image_url !== undefined) updates.image_url = incoming.image_url;
+    if (incoming.type !== undefined) updates.type = incoming.type;
+    if (incoming.rating !== undefined) updates.rating = incoming.rating;
+    if (incoming.status !== undefined) updates.status = incoming.status;
+
+    if (incoming.progress !== undefined) {
+        try {
+            updates.progress = normalizeProgress(incoming.progress);
+        } catch (err) {
+            return res.status(400).json({ error: err.message });
+        }
+    }
+    
+    // Update the media
+    const media = await Media.findOneAndUpdate({_id: id, user_id : user_id}, updates);
+
+    // Create feed activities for changes
+    if (updates.status && updates.status !== oldMedia.status) {
+        await createFeedActivity(user_id, 'updated_status', id, oldMedia.status, updates.status);
+    }
+    if (updates.rating && updates.rating !== oldMedia.rating) {
+        await createFeedActivity(user_id, 'updated_rating', id, oldMedia.rating, updates.rating);
+    }
+    if (updates.progress && updates.progress !== oldMedia.progress) {
+        await createFeedActivity(user_id, 'updated_progress', id, oldMedia.progress, updates.progress);
     }
 
     res.status(200).json(media);
@@ -442,7 +511,13 @@ const importMedia = async (req,res) => {
             // add docs to db
             const media = await Media.create({name, image_url, progress, type, rating, status, user_id, media_id});
             importedMedia.push(media);
+            
+            // Create feed activity for imported media
+            await createFeedActivity(user_id, 'added_media', media._id);
         }
+        
+        // Check for milestones after all imports
+        await checkMilestones(user_id);
     } catch (error){
         return res.status(500).json({error: error.message});
     }
