@@ -11,6 +11,11 @@ const mediaSchema = new Schema({
         type: String,
         required: true
     },
+    source: {
+        type: String,
+        required: true,
+        default: 'internal'
+    },
     progress: {
         type: String,
         required: false

@@ -17,7 +17,7 @@ const corsOptions = {
     'https://mytria.app',
     'http://localhost:3000',
     'http://localhost:8081',
-    'http://10.39.65.18:8081'
+    'http://10.39.52.174:8081',
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization']

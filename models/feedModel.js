@@ -4,16 +4,17 @@ const Schema = mongoose.Schema;
 
 const feedSchema = new Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  type: { 
-    type: String, 
-    enum: ['added_media', 'updated_status', 'updated_rating', 'updated_progress', 'milestone'], 
-    required: true 
+  type: {
+    type: String,
+    enum: ['added_media', 'updated_status', 'updated_rating', 'updated_progress', 'milestone'],
+    required: true
   },
-  media: { type: mongoose.Schema.Types.ObjectId, ref: 'Media', required: false }, // null for milestones
-  mediaName: { type: String, required: false }, // denormalized for performance
-  mediaType: { type: String, required: false }, // denormalized for performance
-  mediaImage: { type: String, required: false }, // denormalized for performance
-  mediaId: { type: String, required: false }, // for linking to details page
+  media: { type: mongoose.Schema.Types.ObjectId, ref: 'UserMedia', required: false }, // null for milestones
+  mediaName: { type: String, required: false },
+  mediaType: { type: String, required: false },
+  mediaImage: { type: String, required: false },
+  mediaSource: { type: String, required: false },
+  mediaId: { type: String, required: false },
   oldValue: String,
   newValue: String,
   milestoneData: {

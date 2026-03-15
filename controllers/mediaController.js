@@ -1,83 +1,205 @@
 const { XMLParser } = require("fast-xml-parser");
+const slugify = require("slugify");
+const crypto = require("crypto");
+const mongoose = require("mongoose");
+const cloudinary = require("cloudinary").v2;
+const NodeCache = require("node-cache");
 
-// Used to make strings that are url friendly
-const slugify = require("slugify"); 
-// Used to make unique hashes
-const crypto = require("crypto");   
+const UserMedia = require("../models/userMediaModel");
+const UniqueMedia = require("../models/uniqueMediaModel");
+const User = require("../models/userModel");
+const { createFeedActivity, checkMilestones } = require("../controllers/feedController");
 
-const Media = require('../models/mediaModel');
-const User = require('../models/userModel');
-const { createFeedActivity, checkMilestones } = require('../controllers/feedController');
-
-const NodeCache = require('node-cache');
 const trendingCache = new NodeCache({ stdTTL: 86400 });
 
-const mongoose = require('mongoose');
-
-const cloudinary = require('cloudinary').v2;
-
-
 cloudinary.config({
-    cloudinary_url: process.env.CLOUDINARY_URL
+    cloudinary_url: process.env.CLOUDINARY_URL,
 });
 
-// This function will help us generate slugs
 function generateHash(str) {
     if (!str) return crypto.randomBytes(3).toString("hex");
     return crypto.createHash("md5").update(str).digest("hex").slice(0, 6);
 }
 
 function generateSlug(name, imageUrl) {
-    // Only take the first 50 chars of the name, converted to a clean slug
     const base = slugify(name || "untitled", { lower: true, strict: true }).slice(0, 50);
-    // Generate a hash based on the image URL or name
     const hash = generateHash(imageUrl || name);
-    // Combine them, e.g., "drawing-closer-4394b0"
     return `${base}-${hash}`;
 }
 
-// Helper to safely normalise and validate progress values
-// Accepts numbers or numeric strings, returns a normalised string or null for "no progress".
-// Throws an Error if the value is not a safe non-negative integer.
+function normalizeName(name = "") {
+    return String(name).trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function escapeRegex(str = "") {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function normalizeProgress(rawProgress) {
-    if (rawProgress === undefined || rawProgress === null || rawProgress === '') {
-        return '';
+    if (rawProgress === undefined || rawProgress === null || rawProgress === "") {
+        return "";
     }
 
     const str = String(rawProgress).trim();
 
-    // Allow only non-negative integers
     if (!/^\d+$/.test(str)) {
-        throw new Error('Progress must be a non-negative whole number');
+        throw new Error("Progress must be a non-negative whole number");
     }
 
-    // Avoid absurdly large values
-    if (str.length > 9) { // > 999,999,999
-        throw new Error('Progress value is too large');
+    if (str.length > 9) {
+        throw new Error("Progress value is too large");
     }
 
     return str;
 }
 
-//GET all media
-const getMedias = async (req,res) => {
-    const user_id = req.user._id;
+function serializeUserMedia(doc) {
+    const media = doc.unique_media_ref || {};
+    const useCustomDisplay = Boolean(doc.use_custom_display);
 
-    const medias = await Media.find({user_id}).sort({status: 1});
+    return {
+        _id: doc._id,
+        user_id: doc.user_id,
+        unique_media_ref: media._id || doc.unique_media_ref,
 
-    const user = await User.findOne({ _id: user_id });
-    const privacy = user.private;
+        rating: doc.rating,
+        status: doc.status,
+        progress: doc.progress,
+        fav: doc.fav,
+        createdAt: doc.createdAt,
+        updatedAt: doc.updatedAt,
 
-    return res.status(200).json({ watchList: medias, private: privacy });
+        use_custom_display: useCustomDisplay,
+        custom_name: doc.custom_name || "",
+        custom_image_url: doc.custom_image_url || "",
+
+        name: useCustomDisplay && doc.custom_name ? doc.custom_name : media.name,
+        image_url: useCustomDisplay && doc.custom_image_url ? doc.custom_image_url : media.image_url,
+
+        type: media.type,
+        source: media.source,
+        media_id: media.media_id,
+        score: media.score,
+    };
 }
 
-//GET media of a profile
-const getProfileMedia = async (req,res) => {
+async function findPotentialUniqueMatches({ name, type, limit = 8 }) {
+    const cleanName = String(name || "").trim();
+    const cleanType = String(type || "").trim();
+
+    if (!cleanName || !cleanType) return [];
+
+    const normalized = normalizeName(cleanName);
+    const escaped = escapeRegex(normalized);
+
+    const exactMatches = await UniqueMedia.find({
+        type: cleanType,
+        normalized_name: normalized,
+    })
+        .select("_id name image_url type source media_id score normalized_name")
+        .limit(limit);
+
+    if (exactMatches.length > 0) {
+        return exactMatches;
+    }
+
+    const prefixMatches = await UniqueMedia.find({
+        type: cleanType,
+        normalized_name: { $regex: `^${escaped}`, $options: "i" },
+    })
+        .select("_id name image_url type source media_id score normalized_name")
+        .limit(limit);
+
+    return prefixMatches;
+}
+
+async function findOrCreateUniqueMedia({
+    name,
+    image_url,
+    type,
+    source,
+    media_id,
+    score,
+}) {
+    const cleanSource = String(source || "").trim();
+    const cleanMediaId = String(media_id || "").trim();
+    const cleanName = String(name || "").trim();
+    const cleanType = String(type || "").trim();
+    const cleanImage = String(image_url || "").trim();
+
+    if (!cleanName || !cleanType) {
+        throw new Error("Name and type are required.");
+    }
+
+    if (cleanSource && cleanMediaId) {
+        let existing = await UniqueMedia.findOne({
+            source: cleanSource,
+            media_id: cleanMediaId,
+        });
+
+        if (existing) {
+            return existing;
+        }
+
+        return await UniqueMedia.create({
+            source: cleanSource,
+            media_id: cleanMediaId,
+            type: cleanType,
+            name: cleanName,
+            normalized_name: normalizeName(cleanName),
+            image_url: cleanImage,
+            ...(score !== undefined && score !== null && score !== "" ? { score } : {}),
+        });
+    }
+
+    let fallback = await UniqueMedia.findOne({
+        type: cleanType,
+        normalized_name: normalizeName(cleanName),
+        image_url: cleanImage,
+    });
+
+    if (fallback) {
+        return fallback;
+    }
+
+    return await UniqueMedia.create({
+        type: cleanType,
+        name: cleanName,
+        normalized_name: normalizeName(cleanName),
+        image_url: cleanImage,
+        ...(cleanSource ? { source: cleanSource } : {}),
+        ...(cleanMediaId ? { media_id: cleanMediaId } : {}),
+        ...(score !== undefined && score !== null && score !== "" ? { score } : {}),
+    });
+}
+
+// GET all media for logged-in user
+const getMedias = async (req, res) => {
+    try {
+        const user_id = req.user._id;
+
+        const entries = await UserMedia.find({ user_id })
+            .populate("unique_media_ref")
+            .sort({ status: 1, updatedAt: -1 });
+
+        const user = await User.findById(user_id).select("private");
+
+        return res.status(200).json({
+            watchList: entries.map(serializeUserMedia),
+            private: user?.private ?? false,
+        });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+};
+
+// GET media of a profile
+const getProfileMedia = async (req, res) => {
     const { username } = req.params;
+
     try {
         const user = await User.findOne({ username });
 
-        //if the user has requested an invalid username
         if (!user) {
             return res.status(404).json({ error: "User not found" });
         }
@@ -85,445 +207,486 @@ const getProfileMedia = async (req,res) => {
         const user_id = user._id;
         const privacy = user.private;
 
-        // public profile — anyone can view
+        const fetchProfileMedia = async () => {
+            const entries = await UserMedia.find({ user_id })
+                .populate("unique_media_ref")
+                .sort({ status: 1, updatedAt: -1 });
+
+            return res.status(200).json({
+                watchList: entries.map(serializeUserMedia),
+                private: privacy,
+            });
+        };
+
         if (!privacy) {
-            const profileMedia = await Media.find({ user_id }).sort({ status: 1 });
-            return res.status(200).json({ watchList: profileMedia, private: privacy });
+            return await fetchProfileMedia();
         }
 
-        // private profile — check if viewer is a follower
-        // Try to identify the viewer from an optional auth header
         const { authorization } = req.headers;
+
         if (authorization) {
             try {
-                const jwt = require('jsonwebtoken');
-                const token = authorization.split(' ')[1];
+                const jwt = require("jsonwebtoken");
+                const token = authorization.split(" ")[1];
                 const { _id } = jwt.verify(token, process.env.SECRET);
-                const viewer = await User.findOne({ _id }).select('username');
+                const viewer = await User.findById(_id).select("username");
 
                 if (viewer) {
-                    // Allow if viewer is the profile owner
                     if (viewer.username === username) {
-                        const profileMedia = await Media.find({ user_id }).sort({ status: 1 });
-                        return res.status(200).json({ watchList: profileMedia, private: privacy });
+                        return await fetchProfileMedia();
                     }
-                    // Allow if viewer is a follower of this private profile
+
                     if (user.followers && user.followers.includes(viewer.username)) {
-                        const profileMedia = await Media.find({ user_id }).sort({ status: 1 });
-                        return res.status(200).json({ watchList: profileMedia, private: privacy });
+                        return await fetchProfileMedia();
                     }
                 }
             } catch (err) {
-                // Invalid token — treat as unauthenticated viewer
+                // treat as unauthenticated
             }
         }
 
-        // private profile and viewer is not a follower (or not logged in)
         return res.status(403).json({ error: "This account is private", private: true });
-    } catch (error){
+    } catch (error) {
         return res.status(500).json({ error: error.message });
     }
-}
+};
+
+// GET match suggestions
+const suggestMediaMatches = async (req, res) => {
+    try {
+        const { name, type } = req.query;
+
+        if (!name || !type) {
+            return res.status(400).json({ error: "Name and type are required." });
+        }
+
+        const matches = await findPotentialUniqueMatches({ name, type, limit: 8 });
+        return res.status(200).json(matches);
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+};
 
 // GET trending media
-// Will be replaced by a ML based recommendation system soon
-const getTrendingMedia = async (req,res) => {
-
+const getTrendingMedia = async (req, res) => {
     try {
-        const cachedResult = trendingCache.get('trendingMedia');
+        const cachedResult = trendingCache.get("trendingMedia");
         if (cachedResult) {
-            console.log('Cache found.');
             return res.status(200).json(cachedResult);
         }
 
-        console.log('Cache expired/not found. Fetching new trending media from database...');
-
-        const result = await Media.aggregate([
+        const result = await UserMedia.aggregate([
             {
                 $group: {
-                _id: { name: "$name", type: "$type" }, // group by fields
-                count: { $sum: 1 }, // count frequency
-                sampleDoc: { $first: "$$ROOT" } // keep one example document
-                }
+                    _id: "$unique_media_ref",
+                    count: { $sum: 1 },
+                },
             },
-            { $sort: { count: -1 } }, // sort by frequency
-            { $limit: 15 }, // take top 15
+            { $sort: { count: -1 } },
+            { $limit: 15 },
+            {
+                $lookup: {
+                    from: "uniquemedias",
+                    localField: "_id",
+                    foreignField: "_id",
+                    as: "media",
+                },
+            },
+            { $unwind: "$media" },
             {
                 $project: {
                     _id: 0,
-                    name: "$_id.name",
-                    type: "$_id.type",
-                    media_id: {
-                        $ifNull: [
-                            "$sampleDoc.media_id",
-                            {
-                                $concat: [
-                                    {
-                                        $substrBytes: [
-                                            {
-                                                $replaceAll: {
-                                                    input: { $toLower: "$sampleDoc.name" },
-                                                    find: " ",
-                                                    replacement: "-"
-                                                }
-                                            },
-                                            0,
-                                            50
-                                        ]
-                                    },
-                                    "-",
-                                    { $substrBytes: [{ $toString: "$sampleDoc._id" }, 0, 6] }
-                                ]
-                            }
-                        ]
-                    },
+                    name: "$media.name",
+                    type: "$media.type",
+                    media_id: "$media.media_id",
+                    source: "$media.source",
                     count: 1,
                     sampleDoc: {
-                        _id: "$sampleDoc._id",
-                        name: "$sampleDoc.name",
-                        type: "$sampleDoc.type",
-                        image_url: "$sampleDoc.image_url",
-                        media_id: {
-                            $ifNull: [
-                                "$sampleDoc.media_id",
-                                {
-                                    $concat: [
-                                        {
-                                            $substrBytes: [
-                                                {
-                                                    $replaceAll: {
-                                                        input: { $toLower: "$sampleDoc.name" },
-                                                        find: " ",
-                                                        replacement: "-"
-                                                    }
-                                                },
-                                                0,
-                                                50
-                                            ]
-                                        },
-                                        "-",
-                                        { $substrBytes: [{ $toString: "$sampleDoc._id" }, 0, 6] }
-                                    ]
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
+                        _id: "$media._id",
+                        name: "$media.name",
+                        type: "$media.type",
+                        image_url: "$media.image_url",
+                        media_id: "$media.media_id",
+                        source: "$media.source",
+                        score: "$media.score",
+                    },
+                },
+            },
         ]);
 
-        trendingCache.set('trendingMedia', result);
-
+        trendingCache.set("trendingMedia", result);
         return res.status(200).json(result);
-    } catch (error){
+    } catch (error) {
         return res.status(500).json({ error: error.message });
     }
-}
+};
 
-//POST a new media
-const createMedia = async (req,res) => {
-    const { name, image_url, progress, type, rating, status, media_id } = req.body;
+// POST a new media
+const createMedia = async (req, res) => {
+    const {
+        name,
+        image_url,
+        progress,
+        type,
+        rating,
+        status,
+        media_id,
+        source,
+        score,
+        fav,
+        matched_unique_media_id,
+        use_custom_display,
+        custom_name,
+        custom_image_url,
+    } = req.body;
 
-    // Validating the request
     if (!name || !type) {
         return res.status(400).json({ error: "Name and type are required." });
     }
 
-    // add doc to db
     try {
         const user_id = req.user._id;
-        
-        // Generate backup slug if media_id is empty or undefined
-        let finalMediaId = media_id;
-        const mediaIdStr = String(media_id ?? '').trim();
-        if (!mediaIdStr) {
-            finalMediaId = generateSlug(name, image_url);
-        } else {
-            finalMediaId = mediaIdStr;
-        }
 
-        // Normalise and validate progress (numeric-only, optional)
-        let safeProgress = '';
+        let safeProgress = "";
         try {
             safeProgress = normalizeProgress(progress);
         } catch (err) {
             return res.status(400).json({ error: err.message });
         }
 
-        const media = await Media.create({ name, image_url, progress: safeProgress, type, rating, status, user_id, media_id: finalMediaId });
-        
-        // Create feed activity for adding media
-        await createFeedActivity(user_id, 'added_media', media._id);
-        
-        // Check for milestones
-        await checkMilestones(user_id);
-        
-        res.status(200).json(media);
-    } catch (error){
-        res.status(400).json({error: error.message});
-    }
-}
+        let uniqueMedia = null;
 
-//DELETE a media
-const deleteMedia = async(req,res) => {
-    const user_id = req.user._id;
-    const { id } = req.params;
-
-    if (!mongoose.Types.ObjectId.isValid(id)){
-        return res.status(404).json({error: 'Media does not exist.'});
-    }
-
-    const media = await Media.findOne({ _id: id, user_id });
-
-    if (!media){
-        return res.status(404).json({error: 'Media does not exist.'});
-    }
-
-    // Delete image from Cloudinary if it exists
-    if (media.image_url) {
-        try {
-            // Extract the public_id safely from the URL
-            const match = media.image_url.match(/upload\/(?:v\d+\/)?(.+)\.[^.]+$/);
-            const publicId = match ? match[1] : null;
-
-            if (publicId) {
-                await cloudinary.uploader.destroy(publicId).catch(() => {});
+        if (matched_unique_media_id) {
+            if (!mongoose.Types.ObjectId.isValid(matched_unique_media_id)) {
+                return res.status(400).json({ error: "Invalid matched_unique_media_id." });
             }
-        } catch (err) {
-            console.error("Cloudinary deletion failed:", err.message);
+
+            uniqueMedia = await UniqueMedia.findById(matched_unique_media_id);
+
+            if (!uniqueMedia) {
+                return res.status(404).json({ error: "Matched media not found." });
+            }
+        } else {
+            let finalMediaId = media_id;
+            const mediaIdStr = String(media_id ?? "").trim();
+
+            if (!mediaIdStr) {
+                finalMediaId = generateSlug(name, image_url);
+            } else {
+                finalMediaId = mediaIdStr;
+            }
+
+            const finalSource = source || "internal";
+
+            uniqueMedia = await findOrCreateUniqueMedia({
+                name,
+                image_url,
+                type,
+                source: finalSource,
+                media_id: finalMediaId,
+                score,
+            });
         }
+
+        const shouldUseCustomDisplay = matched_unique_media_id
+            ? Boolean(use_custom_display)
+            : true;
+
+        const userMedia = await UserMedia.create({
+            user_id,
+            unique_media_ref: uniqueMedia._id,
+            progress: safeProgress,
+            rating,
+            status,
+            fav: Boolean(fav),
+
+            use_custom_display: shouldUseCustomDisplay,
+            custom_name: shouldUseCustomDisplay ? (custom_name || name || "") : "",
+            custom_image_url: shouldUseCustomDisplay ? (custom_image_url || image_url || "") : "",
+        });
+
+        const populated = await UserMedia.findById(userMedia._id).populate("unique_media_ref");
+
+        await createFeedActivity(user_id, "added_media", userMedia._id);
+        await checkMilestones(user_id);
+
+        res.status(200).json(serializeUserMedia(populated));
+    } catch (error) {
+        console.error("Error in createMedia:", error);
+        res.status(400).json({ error: error.message });
     }
+};
 
-    // Delete document
-    await Media.deleteOne({ _id: id, user_id });
+// DELETE a media
+const deleteMedia = async (req, res) => {
+    try {
+        const user_id = req.user._id;
+        const { id } = req.params;
 
-    res.status(200).json(media);
-}
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(404).json({ error: "Media does not exist." });
+        }
 
-//UPDATE a media
+        const userMedia = await UserMedia.findOne({ _id: id, user_id }).populate("unique_media_ref");
+
+        if (!userMedia) {
+            return res.status(404).json({ error: "Media does not exist." });
+        }
+
+        const serialized = serializeUserMedia(userMedia);
+        const uniqueMediaId = userMedia.unique_media_ref?._id;
+
+        await UserMedia.deleteOne({ _id: id, user_id });
+
+        if (uniqueMediaId) {
+            const remainingRefs = await UserMedia.countDocuments({ unique_media_ref: uniqueMediaId });
+
+            if (remainingRefs === 0) {
+                const media = userMedia.unique_media_ref;
+
+                if (media?.source === "internal" && media?.image_url) {
+                    try {
+                        const match = media.image_url.match(/upload\/(?:v\d+\/)?(.+)\.[^.]+$/);
+                        const publicId = match ? match[1] : null;
+
+                        if (publicId) {
+                            await cloudinary.uploader.destroy(publicId).catch(() => {});
+                        }
+                    } catch (err) {
+                        console.error("Cloudinary deletion failed:", err.message);
+                    }
+                }
+
+                await UniqueMedia.deleteOne({ _id: uniqueMediaId });
+            }
+        }
+
+        res.status(200).json(serialized);
+    } catch (error) {
+        console.error("Error in deleteMedia:", error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// UPDATE a media
 const updateMedia = async (req, res) => {
-    const user_id = req.user._id;
-    const { id } = req.params;
+    try {
+        const user_id = req.user._id;
+        const { id } = req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(id)){
-        return res.status(404).json({error: 'Media does not exist.'});
-    }
-
-    // Get old media before update
-    const oldMedia = await Media.findOne({ _id: id, user_id });
-    if (!oldMedia) {
-        return res.status(404).json({error: 'Media does not exist.'});
-    }
-
-    const incoming = req.body || {};
-
-    // Whitelist updatable fields to avoid accidental/malicious writes
-    const updates = {};
-    if (incoming.name !== undefined) updates.name = incoming.name;
-    if (incoming.image_url !== undefined) updates.image_url = incoming.image_url;
-    if (incoming.type !== undefined) updates.type = incoming.type;
-    if (incoming.rating !== undefined) updates.rating = incoming.rating;
-    if (incoming.status !== undefined) updates.status = incoming.status;
-
-    if (incoming.progress !== undefined) {
-        try {
-            updates.progress = normalizeProgress(incoming.progress);
-        } catch (err) {
-            return res.status(400).json({ error: err.message });
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(404).json({ error: "Media does not exist." });
         }
-    }
-    
-    // Update the media
-    const media = await Media.findOneAndUpdate({_id: id, user_id : user_id}, updates);
 
-    // Create feed activities for changes
-    if (updates.status && updates.status !== oldMedia.status) {
-        await createFeedActivity(user_id, 'updated_status', id, oldMedia.status, updates.status);
-    }
-    if (updates.rating && updates.rating !== oldMedia.rating) {
-        await createFeedActivity(user_id, 'updated_rating', id, oldMedia.rating, updates.rating);
-    }
-    if (updates.progress && updates.progress !== oldMedia.progress) {
-        await createFeedActivity(user_id, 'updated_progress', id, oldMedia.progress, updates.progress);
-    }
+        const oldUserMedia = await UserMedia.findOne({ _id: id, user_id }).populate("unique_media_ref");
+        if (!oldUserMedia) {
+            return res.status(404).json({ error: "Media does not exist." });
+        }
 
-    res.status(200).json(media);
-}
+        const incoming = req.body || {};
+        const updates = {};
+
+        if (incoming.rating !== undefined) updates.rating = String(incoming.rating);
+        if (incoming.status !== undefined) updates.status = incoming.status;
+        if (incoming.fav !== undefined) updates.fav = Boolean(incoming.fav);
+
+        if (incoming.progress !== undefined) {
+            try {
+                updates.progress = normalizeProgress(incoming.progress);
+            } catch (err) {
+                return res.status(400).json({ error: err.message });
+            }
+        }
+
+        if (incoming.use_custom_display !== undefined) {
+            updates.use_custom_display = Boolean(incoming.use_custom_display);
+        }
+
+        if (incoming.custom_name !== undefined) {
+            updates.custom_name = incoming.custom_name;
+        }
+
+        if (incoming.custom_image_url !== undefined) {
+            updates.custom_image_url = incoming.custom_image_url;
+        }
+
+        const userMedia = await UserMedia.findOneAndUpdate(
+            { _id: id, user_id },
+            updates,
+            { new: true }
+        ).populate("unique_media_ref");
+
+        if (updates.status !== undefined && updates.status !== oldUserMedia.status) {
+            await createFeedActivity(user_id, "updated_status", id, oldUserMedia.status, updates.status);
+        }
+        if (updates.rating !== undefined && updates.rating !== oldUserMedia.rating) {
+            await createFeedActivity(user_id, "updated_rating", id, oldUserMedia.rating, updates.rating);
+        }
+        if (updates.progress !== undefined && updates.progress !== oldUserMedia.progress) {
+            await createFeedActivity(user_id, "updated_progress", id, oldUserMedia.progress, updates.progress);
+        }
+
+        res.status(200).json(serializeUserMedia(userMedia));
+    } catch (error) {
+        console.error("Error in updateMedia:", error);
+        res.status(500).json({ error: error.message });
+    }
+};
 
 // Uploading media covers
-const uploadCover = async (req,res) => {
+const uploadCover = async (req, res) => {
     const user_id = req.user._id;
 
     if (!req.file) {
-        return res.status(400).json({ error: 'No image file provided' });
+        return res.status(400).json({ error: "No image file provided" });
     }
 
-    if (req.file.size > 5 * 1024 * 1024) { // 5MB limit
-        return res.status(400).json({ error: 'File too large' });
+    if (req.file.size > 5 * 1024 * 1024) {
+        return res.status(400).json({ error: "File too large" });
     }
 
-    // Generating a random hash per image upload
     const uniqueId = crypto.randomBytes(4).toString("hex");
 
-    //Uploading the image to cloudinary storage
-    return cloudinary.uploader.upload_stream(
-    {
-        public_id: `banners/${user_id}_${uniqueId}`, // unique id for each media
-        format: "webp",
-        //Cropping the image to fit size limits
-        transformation: [
-            { width: 300, height: 500, crop: "fill" }, // cropping image
-            { quality: "auto:low", fetch_format: "auto" }, // optimize quality and reduce file size
-            { effect: "improve" }, // apply contrast and sharpness
-            { dpr: "auto" }, // adjust image quality
-            { compression: "medium" }
-        ]
-    },
-    (error, result) => {
-        if (error){
-            return res.status(400).json({error: error})
-        }else{
-            return res.status(200).json({ message: "Cover uploaded", image_url: result.secure_url});
-        }
-    }).end(req.file.buffer);
-}
+    return cloudinary.uploader
+        .upload_stream(
+            {
+                public_id: `banners/${user_id}_${uniqueId}`,
+                format: "webp",
+                transformation: [
+                    { width: 300, height: 500, crop: "fill" },
+                    { quality: "auto:low", fetch_format: "auto" },
+                    { effect: "improve" },
+                    { dpr: "auto" },
+                    { compression: "medium" },
+                ],
+            },
+            (error, result) => {
+                if (error) {
+                    return res.status(400).json({ error });
+                }
+                return res.status(200).json({
+                    message: "Cover uploaded",
+                    image_url: result.secure_url,
+                });
+            }
+        )
+        .end(req.file.buffer);
+};
 
-// IMPORT (POST) media(s) from other website
-const importMedia = async (req,res) => {
+// IMPORT media from Goodreads
+const importMedia = async (req, res) => {
     const { source } = req.params;
-    let  { handle } = req.body;
+    let { handle } = req.body;
 
     if (!handle) {
         return res.status(400).json({ error: "Handle is required" });
     }
 
-    // Ensure handle is a string and trim
     handle = String(handle || "").trim();
-    
 
-    // Validate handle based on source
-    if (source === 'goodreads') {
-        // Goodreads requires numeric user ID
+    if (source === "goodreads") {
         if (!/^\d+$/.test(handle)) {
             return res.status(400).json({ error: "Invalid Goodreads handle. Must be a number." });
         }
-        // safe conversion to int for Goodreads
         handle = parseInt(handle, 10);
-    } else if (source === 'letterboxd') {
-        // Letterboxd requires username (alphanumeric, hyphens, underscores)
-        if (!/^[a-zA-Z0-9_-]+$/.test(handle)) {
-            return res.status(400).json({ error: "Invalid Letterboxd username. Must contain only letters, numbers, hyphens, and underscores." });
-        }
     } else {
         return res.status(400).json({ error: "Unsupported source" });
     }
 
-    //getting the user's verified id attached by middleware in req
     const user_id = req.user._id;
-
     const parser = new XMLParser();
 
     let url;
-    if (source==='goodreads'){
-        url = "https://www.goodreads.com/review/list_rss/"+handle;
-    } else if (source==='letterboxd'){
-        url = `https://letterboxd.com/${handle}/rss/`;
+    if (source === "goodreads") {
+        url = `https://www.goodreads.com/review/list_rss/${handle}`;
     } else {
         return res.status(400).json({ error: "Unsupported source" });
     }
 
     let items;
+    const importedMedia = [];
 
-    let importedMedia = [];
+    function unwrap(val) {
+        if (val && typeof val === "object" && "__cdata" in val) {
+            return val.__cdata;
+        }
+        return val ?? "";
+    }
 
-    try{
+    function extractGoodreadsBookId(imageUrl) {
+        if (!imageUrl || typeof imageUrl !== "string") return null;
+        const match = imageUrl.match(/\/(\d+)(?:\.[A-Za-z0-9_]+)?\.jpg(?:\?.*)?$/i);
+        return match ? match[1] : null;
+    }
+
+    try {
         const response = await fetch(url);
-
         if (!response.ok) throw new Error("Failed to fetch");
 
         const xmlData = await response.text();
         const jsonObj = parser.parse(xmlData);
         items = jsonObj?.rss?.channel?.item || [];
+
         if (!Array.isArray(items)) {
             items = [items];
         }
 
-        function unwrap(val) {
-            if (val && typeof val === "object" && "__cdata" in val) {
-                return val.__cdata;
-            }
-            return val ?? "";
-        }
-
-
         for (const item of items) {
-            let name, image_url, progress, rating, type, status;
+            let name, image_url, progress, rating, type, status, media_id, mediaSource;
 
-            if (source === 'goodreads') {
+            if (source === "goodreads") {
                 name = unwrap(item.title);
                 image_url = unwrap(item.book_large_image_url);
                 progress = "";
-                rating = String(item.user_rating || '0');
-                type = 'book';
+                rating = String(item.user_rating || "0");
+                type = "book";
+                mediaSource = "goodreads";
 
-                if (item.user_shelves.includes("to-read")) {
+                if ((item.user_shelves || "").includes("to-read")) {
                     status = "to-do";
-                } else if (item.user_shelves.includes("currently-reading")) {
+                } else if ((item.user_shelves || "").includes("currently-reading")) {
                     status = "doing";
                 } else {
                     status = "done";
                 }
-            } else if (source === 'letterboxd') {
-                // Letterboxd RSS format
-                name = unwrap(item.title);
-                
-                // Letterboxd includes images in the description, we need to extract it
-                const description = unwrap(item.description) || "";
-                const imgMatch = description.match(/<img[^>]+src="([^"]*)"[^>]*>/);
-                image_url = imgMatch ? imgMatch[1] : "";
-                
-                progress = "";
-                
-                // Letterboxd includes rating in the title or description
-                const ratingMatch = name.match(/★+/) || description.match(/★+/);
-                if (ratingMatch) {
-                    rating = String(ratingMatch[0].length); // Count the stars
-                } else {
-                    rating = '0';
-                }
-                
-                type = 'movie';
-                
-                // Letterboxd entries are typically movies that have been watched
-                // We can check the description for "Watched" vs "Want to watch"
-                if (description.includes("Want to watch") || description.includes("Watchlist")) {
-                    status = "to-do";
-                } else {
-                    status = "done"; // Most Letterboxd entries are watched movies
-                }
-                
-                // Clean up the title by removing rating stars and extra text
-                name = name.replace(/★+/g, '').replace(/\s*\(\d{4}\).*/, '').trim();
+
+                const extractedGoodreadsId = extractGoodreadsBookId(image_url);
+                media_id = extractedGoodreadsId || generateSlug(name, image_url);
             }
 
-            const media_id = generateSlug(name, image_url);
+            const uniqueMedia = await findOrCreateUniqueMedia({
+                name,
+                image_url,
+                type,
+                source: mediaSource,
+                media_id,
+            });
 
-            // add docs to db
-            const media = await Media.create({name, image_url, progress, type, rating, status, user_id, media_id});
-            importedMedia.push(media);
-            
-            // Create feed activity for imported media
-            await createFeedActivity(user_id, 'added_media', media._id);
+            const userMedia = await UserMedia.create({
+                user_id,
+                unique_media_ref: uniqueMedia._id,
+                progress,
+                rating,
+                status,
+                fav: false,
+                use_custom_display: false,
+                custom_name: "",
+                custom_image_url: "",
+            });
+
+            const populated = await UserMedia.findById(userMedia._id).populate("unique_media_ref");
+            importedMedia.push(serializeUserMedia(populated));
+
+            await createFeedActivity(user_id, "added_media", userMedia._id);
         }
-        
-        // Check for milestones after all imports
+
         await checkMilestones(user_id);
-    } catch (error){
-        return res.status(500).json({error: error.message});
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
     }
 
     return res.status(200).json(importedMedia);
-}
+};
 
 module.exports = {
     createMedia,
@@ -533,5 +696,6 @@ module.exports = {
     deleteMedia,
     updateMedia,
     importMedia,
-    uploadCover
-}
+    uploadCover,
+    suggestMediaMatches,
+};

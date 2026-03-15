@@ -7,7 +7,8 @@ const {
     deleteMedia,
     updateMedia,
     importMedia,
-    uploadCover
+    uploadCover,
+    suggestMediaMatches
 } = require('../controllers/mediaController')
 const requireAuth = require('../middleware/requireAuth');
 const maintenanceMode = require('../middleware/maintenanceMode');
@@ -29,6 +30,9 @@ router.use(limiter);
 
 // GET the top 30 medias.
 router.get('/trending', getTrendingMedia);
+
+// suggest media matches (global search, no auth required)
+router.get('/matches', suggestMediaMatches);
 
 //GET all media from a profile
 // For this route, you do not need to have an account
