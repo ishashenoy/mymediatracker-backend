@@ -31,16 +31,14 @@ const userSchema = new Schema({
         type: String,
         required: false
     },
-    banners: {
-        type: Map,
-        of: String, // each key stores a banner URL
-        default: {} 
-    },
+    // banners field removed; banners now stored per-list
     private : {
         type: Boolean,
         default: false
-    }
-});
+    },
+  },
+  { timestamps: true }
+);
 
 // static signup method
 userSchema.statics.signup = async function (email, password, username) {

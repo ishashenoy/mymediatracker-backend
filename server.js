@@ -28,25 +28,22 @@ app.set('trust proxy', 1);
 
 // middleware
 app.use(express.json());
-app.use((req, res, next) => {
-  console.log(req.path, req.method);
-  next();
-})
 
 // routes
 app.use('/api/medias', mediaRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/feed', feedRoutes);
+app.use('/api/lists', require('./routes/lists'));
 
 //conecting to db
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
     // listen for requests
     app.listen(process.env.PORT || 3001, () => {
-      console.log('connected to db & listening on port', process.env.PORT);
+      // Server connected and listening
     })
   })
   .catch((error) => {
-    console.log(error);
+    // Error connecting to db
   })

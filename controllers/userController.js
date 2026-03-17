@@ -180,78 +180,33 @@ const changeIcon = async (req, res) => {
 
 // GET user's banners
 const getBanner = async (req, res) => {
-    const user_id = req.user._id;
-    
-    const user = await User.findOne({_id: user_id});
-
-    //Checking if the username exists
-    if (!user) return res.status(404).json({error: 'User does not exist.'});
-
-    let banners = user.banners;
-
-    if (!banners || Object.keys(banners).length === 0) {
-        return res.status(200).json({ message: 'none' });
+    const { listId } = req.params;
+    const List = require('../models/listModel');
+    try {
+        const list = await List.findById(listId);
+        if (!list) {
+            return res.status(404).json({ message: 'List not found' });
+        }
+        return res.status(200).json({ banner_url: list.banner_url });
+    } catch (error) {
+        return res.status(500).json({ message: 'Internal Server Error' });
     }
-
-
-    // Convert Map to plain object if needed
-    if (banners instanceof Map) {
-        banners = Object.fromEntries(banners);
-    } else if (banners && banners.toObject) {
-        banners = banners.toObject();
-    }
-    
-    return res.status(200).json(banners);
 }
 
 const changeBanner = async (req, res) => {
-    const { type_number } = req.params;
-    const user_id = req.user._id;
-
+    const { listId } = req.params;
+    const List = require('../models/listModel');
+    const { banner_url } = req.body;
     try {
-        const user = await User.findById(user_id);
-        if (!user) return res.status(404).json({ error: "User not found" });
-
-        if (user.banners && user.banners.get(type_number)) {
-            const oldBannerUrl = user.banners.get(type_number);
-            const oldPublicId = oldBannerUrl.split('/').slice(-1)[0].split('.')[0];
-            await cloudinary.uploader.destroy(oldPublicId).catch(() => {});
+        const list = await List.findById(listId);
+        if (!list) {
+            return res.status(404).send({ message: 'List not found' });
         }
-
-        // Wrap Cloudinary upload in a promise
-        const uploadBanner = () =>
-            new Promise((resolve, reject) => {
-                cloudinary.uploader.upload_stream(
-                    {
-                        public_id: `banners/${user._id}_${type_number}`,
-                        overwrite: true,
-                        format: "webp",
-                        transformation: [
-                            { width: 1000, height: 1000, crop: "fill" },
-                            { quality: "auto:low", fetch_format: "auto" },
-                            { effect: "improve" },
-                            { dpr: "auto" },
-                            { compression: "low" }
-                        ]
-                    },
-                    (error, result) => {
-                        if (error) reject(error);
-                        else resolve(result);
-                    }
-                ).end(req.file.buffer);
-            });
-
-        const result = await uploadBanner();
-
-        if (!user.banners) user.banners = new Map();
-        user.banners.set(type_number, result.secure_url);
-        await user.save();
-
-        return res.status(200).json({ message: "Banner processed", image_url: result.secure_url });
+        list.banner_url = banner_url;
+        await list.save();
+        return res.status(200).send(list);
     } catch (error) {
-        if (!res.headersSent) {
-            return res.status(500).json({ error: error.message || "Upload failed" });
-        }
+        return res.status(500).send({ message: 'Internal Server Error' });
     }
 };
 
@@ -439,7 +394,6 @@ const sendPasswordResetEmail = async (req, res) => {
         return res.status(200).json({ message: 'Password reset email sent.' });
 
     } catch (error) {
-        console.error('Error sending reset email:', error);
         return res.status(500).json({ error: 'Failed to send password reset email.' });
     }
 };
@@ -488,9 +442,124 @@ const resetPassword = async (req, res) => {
     }
 }
 
+// GET user's complete profile data
+const getUserProfile = async (req, res) => {
+    const { username } = req.params;
+    
+    try {
+        // Find the user
+        const user = await User.findOne({ username: username }).select('-password');
+        
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        // Get user's lists
+        const List = require('../models/listModel');
+        const userLists = await List.find({ 
+            user_id: user._id, 
+            archived: false 
+        }).sort({ created_at: -1 });
+
+        // Get user's connections (followers/following count)
+        const followersCount = user.followers ? user.followers.length : 0;
+        const followingCount = user.following ? user.following.length : 0;
+
+        // Get detailed connection info if requesting user is authenticated
+        let detailedConnections = null;
+        if (req.user) {
+            const requestingUser = await User.findById(req.user._id);
+            const isFollowing = requestingUser.following && requestingUser.following.includes(username);
+            const isFollowedByUser = user.followers && user.followers.includes(requestingUser.username);
+            
+            detailedConnections = {
+                isFollowing,
+                isFollowedByUser,
+                followersCount,
+                followingCount
+            };
+        } else {
+            detailedConnections = {
+                isFollowing: false,
+                isFollowedByUser: false,
+                followersCount,
+                followingCount
+            };
+        }
+
+        // Format user lists with media counts and preview items
+        const ListItem = require('../models/listItemModel');
+        const UserMedia = require('../models/userMediaModel');
+        const serializeUserMedia = (media) => {
+            if (!media) return null;
+            return {
+                _id: media._id,
+                status: media.status,
+                rating: media.rating,
+                notes: media.notes,
+                unique_media_ref: media.unique_media_ref,
+                createdAt: media.createdAt,
+                updatedAt: media.updatedAt
+            };
+        };
+        
+        const listDetails = await Promise.all(
+            userLists.map(async (list) => {
+                const mediaCount = await ListItem.countDocuments({ 
+                    list_id: list._id 
+                });
+                
+                // Get preview items (first 4) - like in collection endpoint
+                const previewItems = await ListItem.find({ list_id: list._id })
+                    .populate({
+                        path: 'user_media_id',
+                        populate: {
+                            path: 'unique_media_ref'
+                        }
+                    })
+                    .sort({ createdAt: -1 })
+                    .limit(4);
+                
+                return {
+                    _id: list._id,
+                    name: list.name,
+                    system_key: list.system_key,
+                    banner_url: list.banner_url,
+                    created_at: list.created_at,
+                    updated_at: list.updated_at,
+                    media_count: mediaCount,
+                    previewItems: previewItems.map(item => serializeUserMedia(item.user_media_id)).filter(Boolean)
+                };
+            })
+        );
+
+        // Construct profile response
+        const profileData = {
+            user: {
+                _id: user._id,
+                username: user.username,
+                icon: user.icon,
+                private: user.private,
+                created_at: user.createdAt
+            },
+            connections: detailedConnections,
+            lists: listDetails,
+            stats: {
+                total_lists: userLists.length,
+                total_media: listDetails.reduce((sum, list) => sum + list.media_count, 0)
+            }
+        };
+
+        res.status(200).json(profileData);
+
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to fetch user profile' });
+    }
+};
+
 module.exports = {
-    loginUser,
     signupUser,
+    loginUser,
     followRequest,
     unfollowRequest,
     changePrivacy,
@@ -499,6 +568,7 @@ module.exports = {
     getConnections,
     getIcon,
     getBanner,
+    getUserProfile,
     searchUsers,
     sendPasswordResetEmail,
     resetPassword

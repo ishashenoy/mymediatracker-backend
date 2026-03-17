@@ -61,7 +61,7 @@ const createFeedActivity = async (userId, type, mediaId, oldValue, newValue) => 
 
     await Feed.create(activityData);
   } catch (error) {
-    console.error('Error creating feed activity:', error);
+    // Error creating feed activity
   }
 };
 
@@ -77,7 +77,7 @@ const checkMilestones = async (userId) => {
       }
     }
   } catch (error) {
-    console.error('Error checking milestones:', error);
+    // Error checking milestones
   }
 };
 

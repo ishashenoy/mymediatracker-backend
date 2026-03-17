@@ -2,7 +2,6 @@ const express = require('express');
 const {
     createMedia,
     getMedias,
-    getProfileMedia,
     getTrendingMedia,
     deleteMedia,
     updateMedia,
@@ -33,10 +32,6 @@ router.get('/trending', getTrendingMedia);
 
 // suggest media matches (global search, no auth required)
 router.get('/matches', suggestMediaMatches);
-
-//GET all media from a profile
-// For this route, you do not need to have an account
-router.get('/:username', getProfileMedia);
 
 //require auth for all media routes
 router.use(requireAuth);

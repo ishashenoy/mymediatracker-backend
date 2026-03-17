@@ -48,55 +48,77 @@ router.get('/games/details/:id', requireAuth, async function (req, res) {
     }
 });
 
-// // Searching for movies via TMDB
-// router.get('/movies/:title', requireAuth, async function(req, res){
-//     const {title} = req.params;
-//     const baseUrl = `https://api.themoviedb.org/3/search/movie?api_key=${process.env.TMDB_API_KEY}&query=${encodeURIComponent(title)}`;
+// Searching for movies via TMDB
+router.get('/movies/:title', requireAuth, async function(req, res){
+    const {title} = req.params;
+    const baseUrl = `https://api.themoviedb.org/3/search/movie?query=${encodeURIComponent(title)}`;
 
-//     const abortCont = new AbortController();
+    const abortCont = new AbortController();
 
-//     try{
-//         const response = await fetch(baseUrl, { signal: abortCont.signal });
-//         if (!response.ok) throw new Error("Failed to fetch movies");
-//         const json = await response.json();
-//         const data = json.results || [];
-//         return res.status(200).json(data);
-//     } catch (error){
-//         if (error.name !== "AbortError") {
-//             return res.status(500).json({error: error.message || "Failed to fetch movies"});
-//         }
-//     }
-//     return res.status(500).json({error: "Request aborted"});
-// });
+    try{
+        // Try Bearer token first (new method)
+        let response = await fetch(baseUrl, { 
+            signal: abortCont.signal,
+            headers: {
+                'Authorization': `Bearer ${process.env.TMDB_API_KEY}`,
+                'accept': 'application/json'
+            }
+        });
+        
+        // If Bearer fails, try API key (old method)
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`TMDB API error: ${response.status} - ${errorText}`);
+        }
+        
+        const json = await response.json();
+        const data = json.results || [];
+        return res.status(200).json(data);
+    } catch (error){
+        if (error.name !== "AbortError") {
+            return res.status(500).json({error: error.message || "Failed to fetch movies"});
+        }
+    }
+    return res.status(500).json({error: "Request aborted"});
+});
 
-// // Fetching details for a specific TMDB movie
-// router.get('/movies/details/:id', requireAuth, async function(req, res){
-//     const {id} = req.params;
-//     const baseUrl = `https://api.themoviedb.org/3/movie/${id}?api_key=${process.env.TMDB_API_KEY}`;
+// Fetching details for a specific TMDB movie
+router.get('/movies/details/:id', requireAuth, async function(req, res){
+    const {id} = req.params;
+    const baseUrl = `https://api.themoviedb.org/3/movie/${id}?api_key=${process.env.TMDB_API_KEY}`;
 
-//     try{
-//         const response = await fetch(baseUrl);
-//         if (!response.ok) throw new Error("Failed to fetch movie details");
-//         const json = await response.json();
-//         return res.status(200).json(json);
-//     } catch (error){
-//         return res.status(500).json({error: error.message || "Failed to fetch movie details"});
-//     }
-// });
+    try{
+        const response = await fetch(baseUrl, {
+            headers: {
+                'accept': 'application/json'
+            }
+        });
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`TMDB API error: ${response.status} - ${errorText}`);
+        }
+        
+        const json = await response.json();
+        return res.status(200).json(json);
+    } catch (error){
+        return res.status(500).json({error: error.message || "Failed to fetch movie details"});
+    }
+});
 
-// // Fetching details for a specific justwatch movie
-// router.get('/justwatch/details/:id', requireAuth, async function(req, res){
-//     const {id} = req.params;
-//     const baseUrl = `https://imdb.iamidiotareyoutoo.com/justwatch?id=${id}`;
+// Fetching details for a specific justwatch movie
+router.get('/justwatch/details/:id', requireAuth, async function(req, res){
+    const {id} = req.params;
+    const baseUrl = `https://imdb.iamidiotareyoutoo.com/justwatch?id=${id}`;
 
-//     try{
-//         const response = await fetch(baseUrl);
-//         if (!response.ok) throw new Error("Failed to fetch justwatch movie details");
-//         const json = await response.json();
-//         return res.status(200).json(json);
-//     } catch (error){
-//         return res.status(500).json({error: error.message || "Failed to fetch justwatch movie details"});
-//     }
-// });
+    try{
+        const response = await fetch(baseUrl);
+        if (!response.ok) throw new Error("Failed to fetch justwatch movie details");
+        const json = await response.json();
+        return res.status(200).json(json);
+    } catch (error){
+        return res.status(500).json({error: error.message || "Failed to fetch justwatch movie details"});
+    }
+});
 
 module.exports = router;

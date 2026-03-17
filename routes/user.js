@@ -25,7 +25,7 @@ const passResetLimiter = rateLimit({
 });
 
 //controller functions
-const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getBanner, searchUsers, sendPasswordResetEmail, resetPassword} = require('../controllers/userController');
+const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getBanner, getUserProfile, searchUsers, sendPasswordResetEmail, resetPassword} = require('../controllers/userController');
 
 const router = express.Router();
 
@@ -42,9 +42,6 @@ router.get('/search', limiter, requireAuth, searchUsers);
 // the username is of the receiving user
 router.patch('/:username/follow', limiter, requireAuth, followRequest);
 
-// get banners
-router.get('/banners', limiter, requireAuth, getBanner);
-
 // unfollow request route
 // the username is of the receiving user
 router.patch('/:username/unfollow', limiter, requireAuth, unfollowRequest);
@@ -52,14 +49,14 @@ router.patch('/:username/unfollow', limiter, requireAuth, unfollowRequest);
 // change privacy
 router.patch('/:username/privacy', limiter, requireAuth, changePrivacy);
 
-// upload banner
-router.post('/banners/:type_number', limiter, requireAuth, upload.single('image'), changeBanner);
-
 // upload icon
 router.post('/:username/icon', limiter, requireAuth, upload.single('image'), changeIcon);
 
 // get connections list
 router.get('/:username/connections', limiter, requireAuth, getConnections);
+
+// get user profile (public view, but enhanced data for authenticated users)
+router.get('/:username/profile', limiter, getUserProfile);
 
 //This route below can be seen without having an account
 // get icon

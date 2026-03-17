@@ -338,6 +338,7 @@ const createMedia = async (req, res) => {
         use_custom_display,
         custom_name,
         custom_image_url,
+        listId,
     } = req.body;
 
     if (!name || !type) {
@@ -407,12 +408,25 @@ const createMedia = async (req, res) => {
 
         const populated = await UserMedia.findById(userMedia._id).populate("unique_media_ref");
 
+        // Create ListItem entry if listId is provided
+        if (listId && mongoose.Types.ObjectId.isValid(listId)) {
+            const ListItem = require('../models/listItemModel');
+            try {
+                await ListItem.create({
+                    list_id: listId,
+                    user_id: user_id,
+                    user_media_id: userMedia._id,
+                });
+            } catch (listItemError) {
+                // If ListItem creation fails, don't fail the whole operation
+            }
+        }
+
         await createFeedActivity(user_id, "added_media", userMedia._id);
         await checkMilestones(user_id);
 
         res.status(200).json(serializeUserMedia(populated));
     } catch (error) {
-        console.error("Error in createMedia:", error);
         res.status(400).json({ error: error.message });
     }
 };
@@ -453,7 +467,7 @@ const deleteMedia = async (req, res) => {
                             await cloudinary.uploader.destroy(publicId).catch(() => {});
                         }
                     } catch (err) {
-                        console.error("Cloudinary deletion failed:", err.message);
+                        // Cloudinary deletion failed
                     }
                 }
 
@@ -463,7 +477,6 @@ const deleteMedia = async (req, res) => {
 
         res.status(200).json(serialized);
     } catch (error) {
-        console.error("Error in deleteMedia:", error);
         res.status(500).json({ error: error.message });
     }
 };
@@ -528,7 +541,6 @@ const updateMedia = async (req, res) => {
 
         res.status(200).json(serializeUserMedia(userMedia));
     } catch (error) {
-        console.error("Error in updateMedia:", error);
         res.status(500).json({ error: error.message });
     }
 };
@@ -688,6 +700,136 @@ const importMedia = async (req, res) => {
     return res.status(200).json(importedMedia);
 };
 
+// GET unified user collection (media + lists)
+const getUserCollection = async (req, res) => {
+    const { username } = req.params;
+
+    try {
+        const User = require("../models/userModel");
+        const List = require("../models/listModel");
+        const ListItem = require("../models/listItemModel");
+        
+        const user = await User.findOne({ username });
+        if (!user) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
+        const user_id = user._id;
+        const privacy = user.private;
+
+        const fetchCollection = async () => {
+            // Get all user media
+            const mediaEntries = await UserMedia.find({ user_id })
+                .populate("unique_media_ref")
+                .sort({ status: 1, updatedAt: -1 });
+
+            // Get all lists for the user
+            const lists = await List.find({ user_id });
+
+            // Get list membership for each media item
+            const listItems = await ListItem.find({ user_id })
+                .select('list_id user_media_id');
+
+            // Create media list membership map
+            const mediaToLists = {};
+            listItems.forEach(item => {
+                const userMediaId = item.user_media_id.toString();
+                const listId = item.list_id.toString();
+                if (!mediaToLists[userMediaId]) {
+                    mediaToLists[userMediaId] = [];
+                }
+                mediaToLists[userMediaId].push(listId);
+            });
+
+            // Prepare media data with list membership
+            const media = mediaEntries.map(entry => {
+                const serialized = serializeUserMedia(entry);
+                const userMediaId = entry._id.toString();
+                serialized.listIds = mediaToLists[userMediaId] || [];
+                return serialized;
+            });
+
+            // Prepare lists with preview items and counts
+            const listsWithDetails = await Promise.all(
+                lists.map(async (list) => {
+                    // Get preview items (first 4)
+                    const previewItems = await ListItem.find({ list_id: list._id })
+                        .populate({
+                            path: 'user_media_id',
+                            populate: {
+                                path: 'unique_media_ref'
+                            }
+                        })
+                        .sort({ createdAt: -1 })
+                        .limit(4);
+
+                    // Get true count
+                    const totalCount = await ListItem.countDocuments({ list_id: list._id });
+
+                    return {
+                        _id: list._id,
+                        name: list.name,
+                        banner_url: list.banner_url,
+                        system_key: list.system_key,
+                        totalCount,
+                        previewItems: previewItems.map(item => serializeUserMedia(item.user_media_id))
+                    };
+                })
+            );
+
+            // Calculate statistics
+            const stats = {
+                totalMedia: media.length,
+                totalLists: lists.length
+            };
+
+            return res.status(200).json({
+                user: {
+                    _id: user._id,
+                    username: user.username,
+                    icon: user.icon,
+                    private: user.private,
+                    created_at: user.created_at
+                },
+                media,
+                lists: listsWithDetails,
+                stats
+            });
+        };
+
+        if (!privacy) {
+            return await fetchCollection();
+        }
+
+        // Handle private profile logic
+        const { authorization } = req.headers;
+        if (authorization) {
+            try {
+                const jwt = require("jsonwebtoken");
+                const token = authorization.split(" ")[1];
+                const { _id } = jwt.verify(token, process.env.SECRET);
+                const viewer = await User.findById(_id).select("username");
+
+                if (viewer) {
+                    if (viewer.username === username) {
+                        return await fetchCollection();
+                    }
+
+                    if (user.followers && user.followers.includes(viewer.username)) {
+                        return await fetchCollection();
+                    }
+                }
+            } catch (err) {
+                // treat as unauthenticated
+            }
+        }
+
+        return res.status(403).json({ error: "This account is private", private: true });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+};
+
 module.exports = {
     createMedia,
     getProfileMedia,
@@ -698,4 +840,5 @@ module.exports = {
     importMedia,
     uploadCover,
     suggestMediaMatches,
+    getUserCollection,
 };
