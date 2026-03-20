@@ -6,7 +6,7 @@ const ListItem = require('../models/listItemModel');
 const UserMedia = require('../models/userMediaModel');
 const UniqueMedia = require('../models/uniqueMediaModel');
 const requireAuth = require('../middleware/requireAuth');
-const { getUserCollection } = require('../controllers/mediaController');
+// const { getUserCollection } = require('../controllers/mediaController');
 const multer = require('multer');
 const storage = multer.memoryStorage(); 
 const upload = multer({ storage: storage });
@@ -48,8 +48,8 @@ router.get('/user/:username', async (req, res) => {
     const user = await User.findOne({ username });
     if (!user) return res.status(404).json({ error: 'User not found.' });
 
-    // Get all lists for the user
-    const lists = await List.find({ user_id: user._id });
+    // Get all non-archived lists for the user
+    const lists = await List.find({ user_id: user._id, archived: { $ne: true } });
 
     // For each list, get preview items and true count
     const listsWithItems = await Promise.all(
@@ -257,6 +257,94 @@ router.delete('/:listId/remove-media', requireAuth, async (req, res) => {
   }
 });
 
+// Archive a list
+router.put('/:listId/archive', requireAuth, async (req, res) => {
+  const { listId } = req.params;
+  const user_id = req.user._id;
+
+  if (!mongoose.Types.ObjectId.isValid(listId)) {
+    return res.status(400).json({ error: 'Invalid listId.' });
+  }
+
+  try {
+    const list = await List.findById(listId);
+    if (!list) return res.status(404).json({ error: 'List not found.' });
+    if (list.user_id.toString() !== user_id.toString()) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    list.archived = true;
+    await list.save();
+
+    return res.status(200).json({ message: 'List archived successfully.' });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Restore an archived list
+router.put('/:listId/restore', requireAuth, async (req, res) => {
+  const { listId } = req.params;
+  const user_id = req.user._id;
+
+  if (!mongoose.Types.ObjectId.isValid(listId)) {
+    return res.status(400).json({ error: 'Invalid listId.' });
+  }
+
+  try {
+    const list = await List.findById(listId);
+    if (!list) return res.status(404).json({ error: 'List not found.' });
+    if (list.user_id.toString() !== user_id.toString()) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    list.archived = false;
+    await list.save();
+
+    return res.status(200).json({ message: 'List restored successfully.' });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all archived lists for the authenticated user
+router.get('/user/:username/archived', requireAuth, async (req, res) => {
+  const { username } = req.params;
+  const User = require('../models/userModel');
+  
+  try {
+    // Only allow users to see their own archived lists
+    const user = await User.findOne({ username });
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+    if (user._id.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ error: 'Not authorized to view these lists.' });
+    }
+
+    const lists = await List.find({ user_id: user._id, archived: true });
+
+    const listsWithItems = await Promise.all(
+      lists.map(async (list) => {
+        const previewItems = await ListItem.find({ list_id: list._id })
+          .populate({
+            path: 'user_media_id',
+            populate: { path: 'unique_media_ref' }
+          })
+          .sort({ createdAt: -1 })
+          .limit(4);
+        const totalCount = await ListItem.countDocuments({ list_id: list._id });
+        return {
+          ...list.toObject(),
+          items: previewItems,
+          totalCount
+        };
+      })
+    );
+    return res.status(200).json({ lists: listsWithItems });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 // Get individual list details
 router.get('/:listId', async (req, res) => {
   const { listId } = req.params;
@@ -328,7 +416,7 @@ router.get('/:listId/full', async (req, res) => {
 router.post('/:listId/banner', limiter, requireAuth, upload.single('image'), changeBanner);
 router.get('/:listId/banner', limiter, requireAuth, getBanner);
 
-// GET unified user collection (media + lists)
-router.get('/user/:username/collection', getUserCollection);
+// // GET unified user collection (media + lists)
+// router.get('/user/:username/collection', getUserCollection);
 
 module.exports = router;

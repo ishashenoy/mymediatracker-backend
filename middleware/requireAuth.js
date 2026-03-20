@@ -24,7 +24,13 @@ const requireAuth = async (req, res, next) => {
         
         next();
     } catch (error) {
-        res.status(401).json({error: 'Request is not authorized'})
+        if (error.name === 'TokenExpiredError') {
+            return res.status(401).json({error: 'Session expired. Please log in again.'});
+        } else if (error.name === 'JsonWebTokenError') {
+            return res.status(401).json({error: 'Invalid token. Please log in again.'});
+        } else {
+            return res.status(401).json({error: 'Request is not authorized'});
+        }
     }
 }
 

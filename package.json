@@ -27,6 +27,7 @@
     "node-cache": "^5.1.2",
     "node-mailjet": "^6.0.9",
     "nodemailer": "^7.0.9",
+    "posthog-node": "^5.21.2",
     "slugify": "^1.6.6",
     "validator": "^13.15.15"
   }

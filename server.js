@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const express = require('express');
 const mongoose = require('mongoose');
+const posthog = require('./posthog');
 const mediaRoutes = require('./routes/medias');
 const userRoutes = require('./routes/user');
 const searchRoutes = require('./routes/search');
@@ -16,6 +17,8 @@ const corsOptions = {
   origin: [ // REMEMBER: change when domain name is changed
     'https://mytria.app',
     'http://localhost:3000',
+    'http://localhost:3001',
+    'http://localhost:3002',
     'http://localhost:8081',
     'http://10.39.52.174:8081',
   ],
@@ -28,6 +31,7 @@ app.set('trust proxy', 1);
 
 // middleware
 app.use(express.json());
+app.use(require('./middleware/requestLogger'));
 
 // routes
 app.use('/api/medias', mediaRoutes);
@@ -42,8 +46,16 @@ mongoose.connect(process.env.MONGO_URI)
     // listen for requests
     app.listen(process.env.PORT || 3001, () => {
       // Server connected and listening
+      console.log('Server connected and listening on port', process.env.PORT || 3001);
     })
   })
   .catch((error) => {
     // Error connecting to db
   })
+
+process.on('SIGTERM', async () => {
+  await posthog.shutdown();
+});
+process.on('SIGINT', async () => {
+  await posthog.shutdown();
+});
