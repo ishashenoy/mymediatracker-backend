@@ -1,5 +1,6 @@
 const User = require('../models/userModel');
 const jwt = require('jsonwebtoken');
+const { fireEvent } = require('./eventsController');
 const Mailjet = require('node-mailjet');
 const mailjet = Mailjet.apiConnect(
     process.env.MAILJET_API_KEY,
@@ -168,6 +169,21 @@ const changeIcon = async (req, res) => {
         user.icon = result.secure_url;
         await user.save();
 
+        // Log upload to audit trail (fire-and-forget)
+        setImmediate(async () => {
+            try {
+                const UserUpload = require('../models/userUploadModel');
+                await UserUpload.create({
+                    user_id: user._id,
+                    cloudinary_public_id: `icons/${user._id}`,
+                    resource_type: 'icon',
+                    linked_entity_id: user._id,
+                    linked_entity_type: 'User',
+                    status: 'active',
+                });
+            } catch (e) { /* silent */ }
+        });
+
         // Send response once
         return res.status(200).json({ message: "Icon processed", image_url: result.secure_url });
 
@@ -268,11 +284,25 @@ const followRequest = async (req, res) => {
         await User.findOneAndUpdate({ username: username}, {
             $addToSet: { followers: senderUsername  }
         });
-        
+
         //Update the senders following list
         await User.findOneAndUpdate({ username: senderUsername}, {
             $addToSet: { following: username }
         });
+
+        // Dual-write to follows collection + fire event (async, fire-and-forget)
+        setImmediate(async () => {
+            try {
+                const Follow = require('../models/followModel');
+                await Follow.findOneAndUpdate(
+                    { follower_id: senderId, followee_id: receivingUser._id },
+                    { follower_id: senderId, followee_id: receivingUser._id, created_at: new Date() },
+                    { upsert: true, new: true }
+                );
+                await fireEvent(senderId, 'follow', null, { followee: username });
+            } catch (e) { /* silent */ }
+        });
+
         res.status(200).json({ message: "Follow successful!" });
     } catch (error) {
         return res.status(500).json({error: 'Internal server error.'});
@@ -298,11 +328,20 @@ const unfollowRequest = async (req, res) => {
 
         // checking if the receiving user exists.
         if (!receivingUser) return res.status(404).json({error: 'User does not exist.'});
-        
+
         //Update the senders following list
         await User.findOneAndUpdate({ username: senderUsername}, {
             $pull: { following: username }
         });
+
+        // Remove from follows collection (async, fire-and-forget)
+        setImmediate(async () => {
+            try {
+                const Follow = require('../models/followModel');
+                await Follow.deleteOne({ follower_id: senderId, followee_id: receivingUser._id });
+            } catch (e) { /* silent */ }
+        });
+
         res.status(200).json({ message: "Unfollow succesfull!" });
     } catch (error) {
         return res.status(500).json({error: 'Internal server error.'});
@@ -557,6 +596,34 @@ const getUserProfile = async (req, res) => {
     }
 };
 
+// PATCH /api/user/:username/onboarding
+const updateOnboarding = async (req, res) => {
+    const { username } = req.params;
+    const senderId = req.user._id;
+
+    try {
+        const user = await User.findOne({ username });
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+        if (!user._id.equals(senderId)) return res.status(401).json({ error: 'Not authorized.' });
+
+        const { onboarding_selections } = req.body;
+        if (!Array.isArray(onboarding_selections)) {
+            return res.status(400).json({ error: 'onboarding_selections must be an array.' });
+        }
+
+        user.onboarding_selections = onboarding_selections;
+        await user.save();
+
+        setImmediate(() => fireEvent(senderId, 'onboarding_complete', null, {
+            steps_completed: onboarding_selections.length,
+        }));
+
+        return res.status(200).json({ message: 'Onboarding saved.' });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+};
+
 module.exports = {
     signupUser,
     loginUser,
@@ -571,5 +638,6 @@ module.exports = {
     getUserProfile,
     searchUsers,
     sendPasswordResetEmail,
-    resetPassword
+    resetPassword,
+    updateOnboarding,
 }

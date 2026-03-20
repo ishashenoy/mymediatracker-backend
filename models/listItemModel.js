@@ -8,7 +8,9 @@ const listItemSchema = new Schema(
     user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }, // Reference to the user who owns the list
     user_media_id: { type: mongoose.Schema.Types.ObjectId, ref: 'UserMedia', required: true }, // Reference to the user's saved media
     added_at: { type: Date, default: Date.now }, // Date when the media was added to the list
-    position: { type: Number, default: 0 } // Optional field for ordering list items
+    position: { type: Number, default: 0 }, // Optional field for ordering list items
+    // Short annotation on why this item is in the list — high engagement signal
+    note: { type: String, default: null, trim: true },
   },
   { timestamps: true } // Automatically adds createdAt and updatedAt timestamps
 );

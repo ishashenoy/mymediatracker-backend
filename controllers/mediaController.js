@@ -9,6 +9,7 @@ const UserMedia = require("../models/userMediaModel");
 const UniqueMedia = require("../models/uniqueMediaModel");
 const User = require("../models/userModel");
 const { createFeedActivity, checkMilestones } = require("../controllers/feedController");
+const { fireEvent } = require("../controllers/eventsController");
 
 const trendingCache = new NodeCache({ stdTTL: 86400 });
 
@@ -61,6 +62,7 @@ function serializeUserMedia(doc) {
         _id: doc._id,
         user_id: doc.user_id,
         unique_media_ref: media._id || doc.unique_media_ref,
+        canonical_id: doc.canonical_id || null,
 
         rating: doc.rating,
         status: doc.status,
@@ -80,6 +82,19 @@ function serializeUserMedia(doc) {
         source: media.source,
         media_id: media.media_id,
         score: media.score,
+
+        // Extended data capture fields
+        review_text: doc.review_text || null,
+        contains_spoilers: doc.contains_spoilers || false,
+        rewatch_count: doc.rewatch_count || 0,
+        format: doc.format || null,
+        platform: doc.platform || null,
+        started_at: doc.started_at || null,
+        finished_at: doc.finished_at || null,
+        source_of_discovery: doc.source_of_discovery || null,
+        mood_tags: doc.mood_tags || [],
+        owned: doc.owned || false,
+        dropped_at_progress: doc.dropped_at_progress || null,
     };
 }
 
@@ -131,6 +146,8 @@ async function findOrCreateUniqueMedia({
         throw new Error("Name and type are required.");
     }
 
+    let uniqueMedia;
+
     if (cleanSource && cleanMediaId) {
         let existing = await UniqueMedia.findOne({
             source: cleanSource,
@@ -138,39 +155,86 @@ async function findOrCreateUniqueMedia({
         });
 
         if (existing) {
-            return existing;
+            uniqueMedia = existing;
+        } else {
+            uniqueMedia = await UniqueMedia.create({
+                source: cleanSource,
+                media_id: cleanMediaId,
+                type: cleanType,
+                name: cleanName,
+                normalized_name: normalizeName(cleanName),
+                image_url: cleanImage,
+                ...(score !== undefined && score !== null && score !== "" ? { score } : {}),
+            });
         }
-
-        return await UniqueMedia.create({
-            source: cleanSource,
-            media_id: cleanMediaId,
+    } else {
+        let fallback = await UniqueMedia.findOne({
             type: cleanType,
-            name: cleanName,
             normalized_name: normalizeName(cleanName),
             image_url: cleanImage,
-            ...(score !== undefined && score !== null && score !== "" ? { score } : {}),
         });
+
+        if (fallback) {
+            uniqueMedia = fallback;
+        } else {
+            uniqueMedia = await UniqueMedia.create({
+                type: cleanType,
+                name: cleanName,
+                normalized_name: normalizeName(cleanName),
+                image_url: cleanImage,
+                ...(cleanSource ? { source: cleanSource } : {}),
+                ...(cleanMediaId ? { media_id: cleanMediaId } : {}),
+                ...(score !== undefined && score !== null && score !== "" ? { score } : {}),
+            });
+        }
     }
 
-    let fallback = await UniqueMedia.findOne({
-        type: cleanType,
-        normalized_name: normalizeName(cleanName),
-        image_url: cleanImage,
+    // Dual-write to canonical_media + media_sources (async, fire-and-forget)
+    setImmediate(async () => {
+        try {
+            const CanonicalMedia = require("../models/canonicalMediaModel");
+            const MediaSource = require("../models/mediaSourceModel");
+
+            // Find or create canonical entry by type + normalized_name
+            let canonical = await CanonicalMedia.findOne({
+                type: cleanType,
+                normalized_name: normalizeName(cleanName),
+            });
+
+            if (!canonical) {
+                canonical = await CanonicalMedia.create({
+                    type: cleanType,
+                    name: cleanName,
+                    normalized_name: normalizeName(cleanName),
+                    primary_image_url: cleanImage,
+                    is_user_submitted: !cleanSource || cleanSource === "internal",
+                });
+            }
+
+            // Upsert media source record if we have external identifiers
+            if (cleanSource && cleanMediaId) {
+                await MediaSource.findOneAndUpdate(
+                    { source: cleanSource, source_media_id: cleanMediaId },
+                    {
+                        canonical_id: canonical._id,
+                        metadata_snapshot: { name: cleanName, image_url: cleanImage, score },
+                        last_fetched_at: new Date(),
+                    },
+                    { upsert: true, new: true }
+                );
+            }
+
+            // Lazy backfill: set canonical_id on any UserMedia that references this UniqueMedia
+            await UserMedia.updateMany(
+                { unique_media_ref: uniqueMedia._id, canonical_id: null },
+                { $set: { canonical_id: canonical._id } }
+            );
+        } catch (e) {
+            // Silent — dual-write failures must never affect the primary response
+        }
     });
 
-    if (fallback) {
-        return fallback;
-    }
-
-    return await UniqueMedia.create({
-        type: cleanType,
-        name: cleanName,
-        normalized_name: normalizeName(cleanName),
-        image_url: cleanImage,
-        ...(cleanSource ? { source: cleanSource } : {}),
-        ...(cleanMediaId ? { media_id: cleanMediaId } : {}),
-        ...(score !== undefined && score !== null && score !== "" ? { score } : {}),
-    });
+    return uniqueMedia;
 }
 
 // GET all media for logged-in user
@@ -339,6 +403,19 @@ const createMedia = async (req, res) => {
         custom_name,
         custom_image_url,
         listId,
+        // Tier 2 fields
+        format,
+        platform,
+        started_at,
+        finished_at,
+        rewatch_count,
+        // Tier 3 fields
+        review_text,
+        contains_spoilers,
+        source_of_discovery,
+        mood_tags,
+        owned,
+        dropped_at_progress,
     } = req.body;
 
     if (!name || !type) {
@@ -404,6 +481,19 @@ const createMedia = async (req, res) => {
             use_custom_display: shouldUseCustomDisplay,
             custom_name: shouldUseCustomDisplay ? (custom_name || name || "") : "",
             custom_image_url: shouldUseCustomDisplay ? (custom_image_url || image_url || "") : "",
+
+            // Tier 2/3 fields (all optional)
+            ...(format !== undefined && { format }),
+            ...(platform !== undefined && { platform }),
+            ...(started_at !== undefined && { started_at }),
+            ...(finished_at !== undefined && { finished_at }),
+            ...(rewatch_count !== undefined && { rewatch_count: Number(rewatch_count) || 0 }),
+            ...(review_text !== undefined && { review_text }),
+            ...(contains_spoilers !== undefined && { contains_spoilers: Boolean(contains_spoilers) }),
+            ...(source_of_discovery !== undefined && { source_of_discovery }),
+            ...(mood_tags !== undefined && { mood_tags: Array.isArray(mood_tags) ? mood_tags : [] }),
+            ...(owned !== undefined && { owned: Boolean(owned) }),
+            ...(dropped_at_progress !== undefined && { dropped_at_progress }),
         });
 
         const populated = await UserMedia.findById(userMedia._id).populate("unique_media_ref");
@@ -425,6 +515,13 @@ const createMedia = async (req, res) => {
 
         await createFeedActivity(user_id, "added_media", userMedia._id);
         await checkMilestones(user_id);
+
+        // Fire log_media event (canonical_id may be null until dual-write backfill completes)
+        setImmediate(() => fireEvent(user_id, "log_media", populated.canonical_id || null, {
+            unique_media_id: String(uniqueMedia._id),
+            status: status || "",
+            rating: rating ?? null,
+        }));
 
         res.status(200).json(serializeUserMedia(populated));
     } catch (error) {
@@ -526,20 +623,57 @@ const updateMedia = async (req, res) => {
             updates.custom_image_url = incoming.custom_image_url;
         }
 
+        // Tier 2/3 fields
+        const extendedFields = [
+            "format", "platform", "started_at", "finished_at",
+            "review_text", "source_of_discovery", "dropped_at_progress",
+        ];
+        extendedFields.forEach(field => {
+            if (incoming[field] !== undefined) updates[field] = incoming[field];
+        });
+
+        if (incoming.rewatch_count !== undefined) {
+            updates.rewatch_count = Number(incoming.rewatch_count) || 0;
+        }
+        if (incoming.contains_spoilers !== undefined) {
+            updates.contains_spoilers = Boolean(incoming.contains_spoilers);
+        }
+        if (incoming.owned !== undefined) {
+            updates.owned = Boolean(incoming.owned);
+        }
+        if (incoming.mood_tags !== undefined) {
+            updates.mood_tags = Array.isArray(incoming.mood_tags) ? incoming.mood_tags : [];
+        }
+
         const userMedia = await UserMedia.findOneAndUpdate(
             { _id: id, user_id },
             updates,
             { new: true }
         ).populate("unique_media_ref");
 
+        const canonicalId = userMedia.canonical_id || null;
+
         if (updates.status !== undefined && updates.status !== oldUserMedia.status) {
             await createFeedActivity(user_id, "updated_status", id, oldUserMedia.status, updates.status);
+            setImmediate(() => fireEvent(user_id, "status_change", canonicalId, {
+                old: oldUserMedia.status,
+                new: updates.status,
+            }));
         }
         if (updates.rating !== undefined && updates.rating !== oldUserMedia.rating) {
             await createFeedActivity(user_id, "updated_rating", id, oldUserMedia.rating, updates.rating);
+            setImmediate(() => fireEvent(user_id, "rate", canonicalId, {
+                old: oldUserMedia.rating,
+                new: updates.rating,
+            }));
         }
         if (updates.progress !== undefined && updates.progress !== oldUserMedia.progress) {
             await createFeedActivity(user_id, "updated_progress", id, oldUserMedia.progress, updates.progress);
+        }
+        if (updates.review_text !== undefined) {
+            setImmediate(() => fireEvent(user_id, "review", canonicalId, {
+                has_spoilers: updates.contains_spoilers || false,
+            }));
         }
 
         res.status(200).json(serializeUserMedia(userMedia));
@@ -580,6 +714,18 @@ const uploadCover = async (req, res) => {
                 if (error) {
                     return res.status(400).json({ error });
                 }
+                // Log upload to audit trail (fire-and-forget)
+                setImmediate(async () => {
+                    try {
+                        const UserUpload = require("../models/userUploadModel");
+                        await UserUpload.create({
+                            user_id,
+                            cloudinary_public_id: result.public_id,
+                            resource_type: "cover",
+                            status: "active",
+                        });
+                    } catch (e) { /* silent */ }
+                });
                 return res.status(200).json({
                     message: "Cover uploaded",
                     image_url: result.secure_url,
@@ -714,4 +860,5 @@ module.exports = {
     importMedia,
     uploadCover,
     suggestMediaMatches,
+    findOrCreateUniqueMedia,
 };

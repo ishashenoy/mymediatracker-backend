@@ -47,6 +47,64 @@ const userMediaSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+
+    // --- New data capture fields (all optional) ---
+    canonical_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'CanonicalMedia',
+      default: null,
+      index: true,
+    },
+    review_text: {
+      type: String,
+      default: null,
+    },
+    contains_spoilers: {
+      type: Boolean,
+      default: false,
+    },
+    rewatch_count: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    // e.g. 'streaming', 'physical', 'digital', 'rental', 'ebook', 'audiobook', 'library', 'other'
+    format: {
+      type: String,
+      default: null,
+    },
+    // Free-text platform name, e.g. 'Netflix', 'Steam', 'Kindle'
+    platform: {
+      type: String,
+      default: null,
+    },
+    started_at: {
+      type: Date,
+      default: null,
+    },
+    finished_at: {
+      type: Date,
+      default: null,
+    },
+    // e.g. 'friend_rec', 'mytria_rec', 'list', 'search', 'browsing', 'social_media', 'other'
+    source_of_discovery: {
+      type: String,
+      default: null,
+    },
+    // e.g. ['cozy', 'nostalgic', 'binge-worthy']
+    mood_tags: {
+      type: [String],
+      default: [],
+    },
+    owned: {
+      type: Boolean,
+      default: false,
+    },
+    // If status=dropped, stores the progress value at time of dropping
+    dropped_at_progress: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
   },
   { timestamps: true }
 );

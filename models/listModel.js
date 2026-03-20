@@ -10,7 +10,12 @@ const listSchema = new Schema(
     banner_url: { type: String, default: null }, // URL of the banner image for the list
     created_at: { type: Date, default: Date.now }, // Date when the list was created
     updated_at: { type: Date, default: Date.now }, // Date when the list was last updated
-    archived: { type: Boolean, default: false } // Whether the list is archived
+    archived: { type: Boolean, default: false }, // Whether the list is archived
+    list_type: {
+      type: String,
+      enum: ['manual', 'watchlist', 'favorites', 'ranked', 'other'],
+      default: 'manual',
+    },
   },
   { timestamps: true } // Automatically adds createdAt and updatedAt timestamps
 );

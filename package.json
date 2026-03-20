@@ -5,7 +5,11 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "migrate:createdat": "node scripts/backfillCreatedAt.js",
+    "migrate:follows": "node scripts/migrateFollows.js",
+    "migrate:uniquemedia": "node scripts/migrateUniquemedia.js",
+    "migrate:uniquemedia:dry": "node scripts/migrateUniquemedia.js --dry-run"
   },
   "keywords": [],
   "author": "",
@@ -21,6 +25,7 @@
     "express": "^5.1.0",
     "express-rate-limit": "^8.0.1",
     "fast-xml-parser": "^5.2.5",
+    "http-proxy-middleware": "^3.0.5",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.17.1",
     "multer": "^2.0.2",

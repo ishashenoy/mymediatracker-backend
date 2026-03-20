@@ -2,6 +2,7 @@ require('dotenv').config();
 
 const express = require('express');
 const mongoose = require('mongoose');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 const posthog = require('./posthog');
 const mediaRoutes = require('./routes/medias');
 const userRoutes = require('./routes/user');
@@ -33,16 +34,31 @@ app.set('trust proxy', 1);
 app.use(express.json());
 app.use(require('./middleware/requestLogger'));
 
+// PostHog reverse proxy — bypasses ad blockers
+app.use('/ingest', createProxyMiddleware({
+  target: 'https://us.i.posthog.com',
+  changeOrigin: true,
+  pathRewrite: { '^/ingest': '' },
+}));
+
 // routes
 app.use('/api/medias', mediaRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/feed', feedRoutes);
 app.use('/api/lists', require('./routes/lists'));
+app.use('/api/events', require('./routes/events'));
 
 //conecting to db
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
+    // Register new collections so their indexes are created on startup
+    require('./models/canonicalMediaModel');
+    require('./models/mediaSourceModel');
+    require('./models/eventModel');
+    require('./models/userUploadModel');
+    require('./models/followModel');
+
     // listen for requests
     app.listen(process.env.PORT || 3001, () => {
       // Server connected and listening

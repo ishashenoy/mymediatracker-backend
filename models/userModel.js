@@ -36,6 +36,30 @@ const userSchema = new Schema({
         type: Boolean,
         default: false
     },
+
+    // --- Demographic & onboarding fields (all optional, collected progressively) ---
+    birth_year: {
+        type: Number,
+        default: null,
+    },
+    // ISO 3166-1 alpha-2 country code, e.g. 'US', 'IN'
+    country: {
+        type: String,
+        default: null,
+    },
+    locale: {
+        type: String,
+        default: null,
+    },
+    // Stores structured onboarding step data (media types, platforms, seed titles)
+    onboarding_selections: {
+        type: Array,
+        default: [],
+    },
+    last_active_at: {
+        type: Date,
+        default: null,
+    },
   },
   { timestamps: true }
 );

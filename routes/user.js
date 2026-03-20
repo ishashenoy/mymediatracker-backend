@@ -25,7 +25,7 @@ const passResetLimiter = rateLimit({
 });
 
 //controller functions
-const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getBanner, getUserProfile, searchUsers, sendPasswordResetEmail, resetPassword} = require('../controllers/userController');
+const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getBanner, getUserProfile, searchUsers, sendPasswordResetEmail, resetPassword, updateOnboarding} = require('../controllers/userController');
 
 const router = express.Router();
 
@@ -67,5 +67,8 @@ router.post('/forgot-password', passResetLimiter, sendPasswordResetEmail);
 
 // This route is for password recovery - resetting the password
 router.post('/reset-password/:token', passResetLimiter, resetPassword);
+
+// Save onboarding selections
+router.patch('/:username/onboarding', limiter, requireAuth, updateOnboarding);
 
 module.exports = router;

@@ -6,7 +6,8 @@ const ListItem = require('../models/listItemModel');
 const UserMedia = require('../models/userMediaModel');
 const UniqueMedia = require('../models/uniqueMediaModel');
 const requireAuth = require('../middleware/requireAuth');
-// const { getUserCollection } = require('../controllers/mediaController');
+const { findOrCreateUniqueMedia } = require('../controllers/mediaController');
+const { fireEvent } = require('../controllers/eventsController');
 const multer = require('multer');
 const storage = multer.memoryStorage(); 
 const upload = multer({ storage: storage });
@@ -144,40 +145,15 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized.' });
     }
 
-    // Find or create UniqueMedia
-    const cleanSource = String(source || '').trim();
-    const cleanMediaId = String(media_id || '').trim();
-    let uniqueMedia;
-
-    if (cleanSource && cleanMediaId) {
-      uniqueMedia = await UniqueMedia.findOne({ source: cleanSource, media_id: cleanMediaId });
-      if (!uniqueMedia) {
-        uniqueMedia = await UniqueMedia.create({
-          source: cleanSource,
-          media_id: cleanMediaId,
-          type: String(type).trim(),
-          name: String(name).trim(),
-          normalized_name: String(name).trim().toLowerCase().replace(/\s+/g, ' '),
-          image_url: String(image_url || '').trim(),
-          ...(score !== undefined && score !== null && score !== '' ? { score } : {}),
-        });
-      }
-    } else {
-      const normalizedName = String(name).trim().toLowerCase().replace(/\s+/g, ' ');
-      uniqueMedia = await UniqueMedia.findOne({
-        type: String(type).trim(),
-        normalized_name: normalizedName,
-        image_url: String(image_url || '').trim(),
-      });
-      if (!uniqueMedia) {
-        uniqueMedia = await UniqueMedia.create({
-          type: String(type).trim(),
-          name: String(name).trim(),
-          normalized_name: normalizedName,
-          image_url: String(image_url || '').trim(),
-        });
-      }
-    }
+    // Find or create UniqueMedia (shared helper also dual-writes to canonical_media)
+    const uniqueMedia = await findOrCreateUniqueMedia({
+      name,
+      image_url,
+      type,
+      source,
+      media_id,
+      score,
+    });
 
     // Find or create UserMedia
     let userMedia = await UserMedia.findOne({ user_id, unique_media_ref: uniqueMedia._id });
@@ -203,6 +179,11 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
       }
       throw err;
     }
+
+    // Fire list_add event (async, fire-and-forget)
+    setImmediate(() => fireEvent(user_id, 'list_add', userMedia.canonical_id || null, {
+      list_id: String(listId),
+    }));
 
     return res.status(201).json({ message: 'Added to list.', userMediaId: userMedia._id });
   } catch (error) {
