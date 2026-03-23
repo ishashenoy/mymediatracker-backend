@@ -36,6 +36,62 @@ router.get('/matches', suggestMediaMatches);
 //require auth for all media routes
 router.use(requireAuth);
 
+// Search the authenticated user's own media library by name
+// Returns lightweight results suitable for the post composer attachment picker
+router.get('/my-library', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  const userId = req.user._id;
+  const limit = Math.min(parseInt(req.query.limit, 10) || 10, 20);
+
+  if (!q) return res.status(200).json({ results: [] });
+
+  try {
+    const UserMedia = require('../models/userMediaModel');
+    const UniqueMedia = require('../models/uniqueMediaModel');
+
+    function escapeRegex(str) {
+      return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    // Two-step: find matching UniqueMedia, then intersect with user's library
+    const regex = new RegExp(escapeRegex(q), 'i');
+    const matchingMedia = await UniqueMedia.find({ name: regex })
+      .select('_id name image_url type source media_id')
+      .limit(100)
+      .lean();
+
+    if (!matchingMedia.length) return res.status(200).json({ results: [] });
+
+    const uniqueMediaIds = matchingMedia.map(m => m._id);
+    const userMedias = await UserMedia.find({
+      user_id: userId,
+      unique_media_ref: { $in: uniqueMediaIds },
+    })
+      .select('_id unique_media_ref use_custom_display custom_name custom_image_url')
+      .limit(limit)
+      .lean();
+
+    const mediaMap = new Map(matchingMedia.map(m => [m._id.toString(), m]));
+    const results = userMedias.map(um => {
+      const media = mediaMap.get(um.unique_media_ref.toString());
+      if (!media) return null;
+      return {
+        user_media_id: um._id,
+        unique_media_id: media._id,
+        name: um.use_custom_display && um.custom_name ? um.custom_name : media.name,
+        image_url: um.use_custom_display && um.custom_image_url ? um.custom_image_url : media.image_url,
+        type: media.type,
+        source: media.source,
+        media_id: media.media_id,
+      };
+    }).filter(Boolean);
+
+    return res.status(200).json({ results });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 //GET all media
 router.get('/', getMedias);
 

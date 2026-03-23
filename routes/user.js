@@ -26,6 +26,7 @@ const passResetLimiter = rateLimit({
 
 //controller functions
 const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getBanner, getUserProfile, searchUsers, sendPasswordResetEmail, resetPassword, updateOnboarding} = require('../controllers/userController');
+const { getUserPosts } = require('../controllers/postController');
 
 const router = express.Router();
 
@@ -57,6 +58,9 @@ router.get('/:username/connections', limiter, requireAuth, getConnections);
 
 // get user profile (public view, but enhanced data for authenticated users)
 router.get('/:username/profile', limiter, getUserProfile);
+
+// get user posts + reposts
+router.get('/:username/posts', limiter, requireAuth, getUserPosts);
 
 //This route below can be seen without having an account
 // get icon

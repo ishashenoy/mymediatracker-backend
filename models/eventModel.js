@@ -10,6 +10,12 @@ const VALID_EVENT_TYPES = [
   'search',
   'view_media_page',
   'onboarding_complete',
+  // Social post events
+  'post_create',
+  'post_like',
+  'post_comment',
+  'post_repost',
+  'post_bookmark',
 ];
 
 const eventSchema = new mongoose.Schema({

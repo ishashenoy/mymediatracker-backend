@@ -111,5 +111,9 @@ const userMediaSchema = new mongoose.Schema(
 
 userMediaSchema.index({ user_id: 1, status: 1 });
 userMediaSchema.index({ user_id: 1, fav: 1 });
+userMediaSchema.index(
+  { user_id: 1, canonical_id: 1 },
+  { unique: true, partialFilterExpression: { canonical_id: { $type: 'objectId' } } }
+);
 
 module.exports = mongoose.model('UserMedia', userMediaSchema);

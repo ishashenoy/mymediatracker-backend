@@ -48,6 +48,7 @@ app.use('/api/search', searchRoutes);
 app.use('/api/feed', feedRoutes);
 app.use('/api/lists', require('./routes/lists'));
 app.use('/api/events', require('./routes/events'));
+app.use('/api/posts', require('./routes/posts'));
 
 //conecting to db
 mongoose.connect(process.env.MONGO_URI)
@@ -58,6 +59,9 @@ mongoose.connect(process.env.MONGO_URI)
     require('./models/eventModel');
     require('./models/userUploadModel');
     require('./models/followModel');
+    require('./models/postModel');
+    require('./models/postInteractionModel');
+    require('./models/commentModel');
 
     // listen for requests
     app.listen(process.env.PORT || 3001, () => {
