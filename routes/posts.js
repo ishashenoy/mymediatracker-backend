@@ -13,6 +13,7 @@ const {
   getComments,
   getSuggestions,
   getBookmarkedPosts,
+  getBookmarkedComments,
   getUserPosts,
   toggleCommentLike,
   toggleCommentRepost,
@@ -36,6 +37,7 @@ router.use(requireAuth);
 router.get('/feed',              getFeedPosts);
 router.get('/suggestions',       getSuggestions);
 router.get('/bookmarks',         getBookmarkedPosts);
+router.get('/bookmarks/comments', getBookmarkedComments);
 router.get('/user/:username',    getUserPosts);
 router.post('/',                 createPost);
 

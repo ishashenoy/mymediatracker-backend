@@ -152,6 +152,7 @@ async function findOrCreateUniqueMedia({
         let existing = await UniqueMedia.findOne({
             source: cleanSource,
             media_id: cleanMediaId,
+            type: cleanType,
         });
 
         if (existing) {

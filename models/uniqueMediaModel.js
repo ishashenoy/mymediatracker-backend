@@ -41,7 +41,7 @@ const uniqueMediaSchema = new mongoose.Schema(
 );
 
 uniqueMediaSchema.index(
-    { source: 1, media_id: 1 },
+    { source: 1, media_id: 1, type: 1 },
     {
         unique: true,
         partialFilterExpression: {

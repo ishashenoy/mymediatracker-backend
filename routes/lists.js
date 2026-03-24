@@ -82,7 +82,7 @@ router.get('/user/:username', async (req, res) => {
 
 // Get which lists a specific media belongs to for the authenticated user
 router.get('/media-membership', requireAuth, async (req, res) => {
-  const { source, media_id } = req.query;
+  const { source, media_id, type } = req.query;
   const user_id = req.user._id;
 
   if (!source || !media_id) {
@@ -90,11 +90,13 @@ router.get('/media-membership', requireAuth, async (req, res) => {
   }
 
   try {
-    // Find the UniqueMedia
-    const uniqueMedia = await UniqueMedia.findOne({
+    // Find the UniqueMedia — include type so MAL anime/manga IDs don't collide
+    const membershipQuery = {
       source: String(source).trim(),
       media_id: String(media_id).trim(),
-    });
+    };
+    if (type) membershipQuery.type = String(type).trim();
+    const uniqueMedia = await UniqueMedia.findOne(membershipQuery);
 
     if (!uniqueMedia) {
       return res.status(200).json({ listIds: [], userMediaId: null });

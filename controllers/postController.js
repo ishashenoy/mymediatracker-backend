@@ -440,6 +440,56 @@ const getBookmarkedPosts = async (req, res) => {
   }
 };
 
+// ─── Get Bookmarked Comments ──────────────────────────────────────────────────
+
+const getBookmarkedComments = async (req, res) => {
+  const { cursor, limit: limitParam = 20 } = req.query;
+  const userId = req.user._id;
+  const limit = Math.min(parseInt(limitParam, 10) || 20, 50);
+
+  try {
+    const query = { user_id: userId, interaction_type: 'bookmark' };
+    if (cursor) query.created_at = { $lt: new Date(cursor) };
+
+    const rawInteractions = await CommentInteraction.find(query)
+      .sort({ created_at: -1 })
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rawInteractions.length > limit;
+    const interactions = hasMore ? rawInteractions.slice(0, limit) : rawInteractions;
+    const nextCursor = hasMore ? interactions[interactions.length - 1].created_at.toISOString() : null;
+
+    const commentIds = interactions.map(i => i.comment_id);
+    const comments = await Comment.find({ _id: { $in: commentIds } })
+      .populate('author_id', 'username icon')
+      .lean();
+
+    const postIds = [...new Set(comments.map(c => c.post_id.toString()))];
+    const posts = await Post.find({ _id: { $in: postIds } }).select('_id body').lean();
+    const postMap = new Map(posts.map(p => [p._id.toString(), p]));
+
+    const commentMap = new Map(comments.map(c => [c._id.toString(), c]));
+    const ordered = commentIds.map(id => commentMap.get(id.toString())).filter(Boolean);
+
+    const shaped = ordered.map(c => ({
+      _id: c._id,
+      body: c.body,
+      created_at: c.created_at,
+      author: c.author_id,
+      post: postMap.get(c.post_id.toString()) || { _id: c.post_id },
+      like_count: c.like_count || 0,
+      repost_count: c.repost_count || 0,
+      bookmark_count: c.bookmark_count || 0,
+      viewer_interactions: { liked: false, reposted: false, bookmarked: true },
+    }));
+
+    return res.status(200).json({ comments: shaped, nextCursor, hasMore });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
 // ─── Get User Posts (own posts + reposts, merged by date) ────────────────────
 
 const getUserPosts = async (req, res) => {
@@ -695,6 +745,7 @@ module.exports = {
   getComments,
   getSuggestions,
   getBookmarkedPosts,
+  getBookmarkedComments,
   getUserPosts,
   toggleCommentLike,
   toggleCommentRepost,
