@@ -551,6 +551,10 @@ const deleteMedia = async (req, res) => {
 
         await UserMedia.deleteOne({ _id: id, user_id });
 
+        // Clean up any ListItems referencing this UserMedia so they don't appear as broken "no cover" entries
+        const ListItem = require('../models/listItemModel');
+        await ListItem.deleteMany({ user_media_id: id });
+
         if (uniqueMediaId) {
             const remainingRefs = await UserMedia.countDocuments({ unique_media_ref: uniqueMediaId });
 
