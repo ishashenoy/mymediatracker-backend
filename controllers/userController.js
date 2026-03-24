@@ -59,7 +59,7 @@ const loginUser = async (req, res) => {
   try {
     const user = await User.login(email, password);
     const token = createToken(user._id);
-    return res.status(200).json({ username: user.username, token });
+    return res.status(200).json({ username: user.username, token, icon: user.icon || null });
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }

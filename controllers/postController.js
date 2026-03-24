@@ -136,7 +136,7 @@ const getFeedPosts = async (req, res) => {
   const limit = Math.min(parseInt(limitParam, 10) || 20, 50);
 
   try {
-    const user = await User.findById(userId).select('following');
+    const user = await User.findById(userId).select('following').lean();
     const followingUsernames = user?.following || [];
     const followingUsers = followingUsernames.length > 0
       ? await User.find({ username: { $in: followingUsernames } }).select('_id').lean()
@@ -403,28 +403,6 @@ const getComments = async (req, res) => {
   }
 };
 
-// ─── Record View ─────────────────────────────────────────────────────────────
-
-const recordView = async (req, res) => {
-  const { postId } = req.params;
-  const { session_id } = req.body;
-  const userId = req.user._id;
-
-  try {
-    const post = await Post.findByIdAndUpdate(postId, { $inc: { view_count: 1 } });
-    if (!post) return res.status(404).json({ error: 'Post not found.' });
-
-    fireEvent(userId, 'post_view', null, {
-      post_id: postId,
-      session_id: session_id || null,
-    });
-
-    return res.status(200).json({ ok: true });
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-};
-
 // ─── Get Bookmarked Posts ─────────────────────────────────────────────────────
 
 const getBookmarkedPosts = async (req, res) => {
@@ -537,16 +515,22 @@ const getSuggestions = async (req, res) => {
   const userId = req.user._id;
 
   try {
-    const user = await User.findById(userId).select('following');
-    const excludeIds = [...(user?.following || []), userId];
+    const user = await User.findById(userId).select('following').lean();
+    const followingUsernames = user?.following || [];
 
-    const suggestions = await User.find({
-      _id: { $nin: excludeIds },
-      private: { $ne: true },
-    })
-      .select('username icon')
-      .limit(5)
-      .lean();
+    const suggestions = await User.aggregate([
+      {
+        $match: {
+          _id: { $ne: userId },
+          username: { $nin: followingUsernames },
+          private: { $ne: true },
+        },
+      },
+      { $addFields: { follower_count: { $size: { $ifNull: ['$followers', []] } } } },
+      { $sort: { follower_count: -1 } },
+      { $limit: 5 },
+      { $project: { username: 1, icon: 1 } },
+    ]);
 
     return res.status(200).json({ suggestions });
   } catch (err) {
@@ -602,6 +586,29 @@ async function hydratePosts(posts, userId) {
       : null,
   }));
 }
+
+// ─── Delete Comment ──────────────────────────────────────────────────────────
+
+const deleteComment = async (req, res) => {
+  const { postId, commentId } = req.params;
+  const userId = req.user._id;
+
+  try {
+    const comment = await Comment.findById(commentId);
+    if (!comment) return res.status(404).json({ error: 'Comment not found.' });
+    if (String(comment.author_id) !== String(userId)) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    await CommentInteraction.deleteMany({ comment_id: commentId });
+    await Comment.findByIdAndDelete(commentId);
+    await Post.findByIdAndUpdate(postId, { $inc: { comment_count: -1 } });
+
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
 
 // ─── Toggle Comment Interaction (like / repost / bookmark) ──────────────────
 
@@ -691,10 +698,10 @@ module.exports = {
   addComment,
   getComments,
   getSuggestions,
-  recordView,
   getBookmarkedPosts,
   getUserPosts,
   toggleCommentLike,
   toggleCommentRepost,
   toggleCommentBookmark,
+  deleteComment,
 };

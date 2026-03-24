@@ -13,9 +13,13 @@ const getFeed = async (req, res) => {
 
   try {
     if (filter === 'following') {
-      const user = await User.findById(req.user._id).select('following');
-      const followedUsers = [req.user._id, ...(user?.following || [])];
-      query.user = { $in: followedUsers };
+      const user = await User.findById(req.user._id).select('following').lean();
+      const followingUsernames = user?.following || [];
+      const followingUserDocs = followingUsernames.length > 0
+        ? await User.find({ username: { $in: followingUsernames } }).select('_id').lean()
+        : [];
+      const followedUserIds = [req.user._id, ...followingUserDocs.map(u => u._id)];
+      query.user = { $in: followedUserIds };
     } else if (filter === 'global') {
       const privateUsers = await User.find({ private: true }).select('_id');
       query.user = { $nin: privateUsers.map((u) => u._id) };

@@ -12,12 +12,12 @@ const {
   addComment,
   getComments,
   getSuggestions,
-  recordView,
   getBookmarkedPosts,
   getUserPosts,
   toggleCommentLike,
   toggleCommentRepost,
   toggleCommentBookmark,
+  deleteComment,
 } = require('../controllers/postController');
 
 const router = express.Router();
@@ -42,7 +42,6 @@ router.post('/',                 createPost);
 router.post('/:postId/like',        toggleLike);
 router.post('/:postId/repost',      toggleRepost);
 router.post('/:postId/bookmark',    toggleBookmark);
-router.post('/:postId/view',        recordView);
 router.post('/:postId/poll/vote',   votePoll);
 router.post('/:postId/comments',    addComment);
 router.get('/:postId/comments',     getComments);
@@ -51,5 +50,6 @@ router.delete('/:postId',           deletePost);
 router.post('/:postId/comments/:commentId/like',     toggleCommentLike);
 router.post('/:postId/comments/:commentId/repost',   toggleCommentRepost);
 router.post('/:postId/comments/:commentId/bookmark', toggleCommentBookmark);
+router.delete('/:postId/comments/:commentId',        deleteComment);
 
 module.exports = router;
