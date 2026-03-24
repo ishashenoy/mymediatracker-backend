@@ -136,14 +136,10 @@ const getFeedPosts = async (req, res) => {
   const limit = Math.min(parseInt(limitParam, 10) || 20, 50);
 
   try {
-    const user = await User.findById(userId).select('following').lean();
-    const followingUsernames = user?.following || [];
-    const followingUsers = followingUsernames.length > 0
-      ? await User.find({ username: { $in: followingUsernames } }).select('_id').lean()
-      : [];
-    const authorIds = [...followingUsers.map(u => u._id), userId];
+    const privateUsers = await User.find({ private: true, _id: { $ne: userId } }).select('_id').lean();
+    const privateUserIds = privateUsers.map(u => u._id);
 
-    const query = { author_id: { $in: authorIds } };
+    const query = { author_id: { $nin: privateUserIds } };
     if (cursor) query.created_at = { $lt: new Date(cursor) };
 
     const rawPosts = await Post.find(query)
