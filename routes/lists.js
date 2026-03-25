@@ -265,6 +265,35 @@ router.put('/:listId/archive', requireAuth, async (req, res) => {
   }
 });
 
+// Rename a list
+router.put('/:listId/rename', requireAuth, async (req, res) => {
+  const { listId } = req.params;
+  const { name } = req.body;
+  const user_id = req.user._id;
+
+  if (!mongoose.Types.ObjectId.isValid(listId)) {
+    return res.status(400).json({ error: 'Invalid listId.' });
+  }
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'Name is required.' });
+  }
+
+  try {
+    const list = await List.findById(listId);
+    if (!list) return res.status(404).json({ error: 'List not found.' });
+    if (list.user_id.toString() !== user_id.toString()) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    list.name = name.trim();
+    await list.save();
+
+    return res.status(200).json({ message: 'List renamed successfully.', name: list.name });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 // Restore an archived list
 router.put('/:listId/restore', requireAuth, async (req, res) => {
   const { listId } = req.params;
