@@ -42,6 +42,11 @@ const postSchema = new mongoose.Schema({
     type: LinkedMediaSchema,
     default: null,
   },
+  linked_medias: {
+    type: [LinkedMediaSchema],
+    default: [],
+    validate: [(v) => v.length <= 4, 'Max 4 linked media'],
+  },
   poll: {
     type: PollSchema,
     default: null,
@@ -49,6 +54,13 @@ const postSchema = new mongoose.Schema({
   linked_list_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'List',
+    default: null,
+  },
+
+  // ─── Tag ─────────────────────────────────────────────────────────────────────
+  tag: {
+    type: String,
+    enum: ['review', 'question', 'recommendation', 'discussion', 'rant'],
     default: null,
   },
 

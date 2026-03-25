@@ -67,7 +67,7 @@ router.get('/my-library', async (req, res) => {
       user_id: userId,
       unique_media_ref: { $in: uniqueMediaIds },
     })
-      .select('_id unique_media_ref use_custom_display custom_name custom_image_url')
+      .select('_id unique_media_ref use_custom_display custom_name custom_image_url rating')
       .limit(limit)
       .lean();
 
@@ -83,6 +83,7 @@ router.get('/my-library', async (req, res) => {
         type: media.type,
         source: media.source,
         media_id: media.media_id,
+        rating: um.rating ?? null,
       };
     }).filter(Boolean);
 

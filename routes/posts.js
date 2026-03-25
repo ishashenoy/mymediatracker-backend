@@ -5,6 +5,8 @@ const {
   createPost,
   deletePost,
   getFeedPosts,
+  getPostsByMedia,
+  getPostsByList,
   toggleLike,
   toggleRepost,
   toggleBookmark,
@@ -39,6 +41,8 @@ router.get('/suggestions',       getSuggestions);
 router.get('/bookmarks',         getBookmarkedPosts);
 router.get('/bookmarks/comments', getBookmarkedComments);
 router.get('/user/:username',    getUserPosts);
+router.get('/by-media',          getPostsByMedia);
+router.get('/by-list/:listId',   getPostsByList);
 router.post('/',                 createPost);
 
 router.post('/:postId/like',        toggleLike);

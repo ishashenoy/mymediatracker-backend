@@ -10,8 +10,13 @@ const { fireEvent } = require('./eventsController');
 // ─── Create Post ────────────────────────────────────────────────────────────
 
 const createPost = async (req, res) => {
-  const { body, cover_image_url, linked_media, poll, linked_list_id, session_id } = req.body;
+  const { body, cover_image_url, linked_media, linked_medias, poll, linked_list_id, tag, session_id } = req.body;
   const userId = req.user._id;
+
+  const VALID_TAGS = ['review', 'question', 'recommendation', 'discussion', 'rant'];
+  if (tag && !VALID_TAGS.includes(tag)) {
+    return res.status(400).json({ error: 'Invalid tag.' });
+  }
 
   if (!body || body.trim().length === 0) {
     return res.status(400).json({ error: 'Post body is required.' });
@@ -53,6 +58,7 @@ const createPost = async (req, res) => {
       author_id: userId,
       body: body.trim(),
       cover_image_url: cover_image_url || null,
+      tag: (tag && VALID_TAGS.includes(tag)) ? tag : null,
     };
 
     if (linked_media && linked_media.name && linked_media.type) {
@@ -64,6 +70,22 @@ const createPost = async (req, res) => {
         source: linked_media.source || null,
         media_id: linked_media.media_id || null,
       };
+    }
+
+    if (Array.isArray(linked_medias) && linked_medias.length > 0) {
+      if (linked_medias.length > 4) {
+        return res.status(400).json({ error: 'Maximum 4 media items allowed.' });
+      }
+      postData.linked_medias = linked_medias
+        .filter(m => m && m.name && m.type)
+        .map(m => ({
+          unique_media_id: m.unique_media_id || null,
+          name: m.name,
+          image_url: m.image_url || null,
+          type: m.type,
+          source: m.source || null,
+          media_id: m.media_id || null,
+        }));
     }
 
     if (poll) {
@@ -89,7 +111,7 @@ const createPost = async (req, res) => {
 
     fireEvent(userId, 'post_create', null, {
       body_length: post.body.length,
-      has_media: !!postData.linked_media,
+      has_media: !!(postData.linked_media || postData.linked_medias?.length),
       has_poll: !!postData.poll,
       has_list: !!postData.linked_list_id,
       session_id: session_id || null,
@@ -140,6 +162,73 @@ const getFeedPosts = async (req, res) => {
     const privateUserIds = privateUsers.map(u => u._id);
 
     const query = { author_id: { $nin: privateUserIds } };
+    if (cursor) query.created_at = { $lt: new Date(cursor) };
+
+    const rawPosts = await Post.find(query)
+      .populate('author_id', 'username icon')
+      .sort({ created_at: -1 })
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rawPosts.length > limit;
+    const posts = hasMore ? rawPosts.slice(0, limit) : rawPosts;
+    const nextCursor = hasMore ? posts[posts.length - 1].created_at.toISOString() : null;
+
+    return res.status(200).json({
+      posts: await hydratePosts(posts, userId),
+      nextCursor,
+      hasMore,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+// ─── Get Posts by Linked Media ───────────────────────────────────────────────
+
+const getPostsByMedia = async (req, res) => {
+  const { source, media_id, cursor, limit: limitParam = 20 } = req.query;
+  const userId = req.user._id;
+  const limit = Math.min(parseInt(limitParam, 10) || 20, 50);
+
+  if (!source || !media_id) {
+    return res.status(400).json({ error: 'source and media_id are required.' });
+  }
+
+  try {
+    const query = { 'linked_media.source': source, 'linked_media.media_id': String(media_id) };
+    if (cursor) query.created_at = { $lt: new Date(cursor) };
+
+    const rawPosts = await Post.find(query)
+      .populate('author_id', 'username icon')
+      .sort({ created_at: -1 })
+      .limit(limit + 1)
+      .lean();
+
+    const hasMore = rawPosts.length > limit;
+    const posts = hasMore ? rawPosts.slice(0, limit) : rawPosts;
+    const nextCursor = hasMore ? posts[posts.length - 1].created_at.toISOString() : null;
+
+    return res.status(200).json({
+      posts: await hydratePosts(posts, userId),
+      nextCursor,
+      hasMore,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+// ─── Get Posts by Linked List ─────────────────────────────────────────────────
+
+const getPostsByList = async (req, res) => {
+  const { listId } = req.params;
+  const { cursor, limit: limitParam = 20 } = req.query;
+  const userId = req.user._id;
+  const limit = Math.min(parseInt(limitParam, 10) || 20, 50);
+
+  try {
+    const query = { linked_list_id: listId };
     if (cursor) query.created_at = { $lt: new Date(cursor) };
 
     const rawPosts = await Post.find(query)
@@ -718,7 +807,9 @@ function shapePost(post, viewerInteractions, linkedList) {
     _id: obj._id,
     body: obj.body,
     cover_image_url: obj.cover_image_url,
+    tag: obj.tag || null,
     linked_media: obj.linked_media || null,
+    linked_medias: obj.linked_medias?.length ? obj.linked_medias : [],
     poll: obj.poll || null,
     linked_list: linkedList || null,
     like_count:      obj.like_count,
@@ -737,6 +828,8 @@ module.exports = {
   createPost,
   deletePost,
   getFeedPosts,
+  getPostsByMedia,
+  getPostsByList,
   toggleLike,
   toggleRepost,
   toggleBookmark,
