@@ -49,6 +49,7 @@ app.use('/api/feed', feedRoutes);
 app.use('/api/lists', require('./routes/lists'));
 app.use('/api/events', require('./routes/events'));
 app.use('/api/posts', require('./routes/posts'));
+app.use('/api/aggregate', require('./routes/aggregate'));
 
 //conecting to db
 mongoose.connect(process.env.MONGO_URI)
