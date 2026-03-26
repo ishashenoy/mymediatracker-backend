@@ -35,10 +35,10 @@ app.use(express.json());
 app.use(require('./middleware/requestLogger'));
 
 // PostHog reverse proxy — bypasses ad blockers
-app.use('/ingest', createProxyMiddleware({
+app.use(['/ingest', '/metrics'], createProxyMiddleware({
   target: 'https://us.i.posthog.com',
   changeOrigin: true,
-  pathRewrite: { '^/ingest': '' },
+  pathRewrite: (path) => path.replace(/^\/(ingest|metrics)/, ''),
 }));
 
 // routes

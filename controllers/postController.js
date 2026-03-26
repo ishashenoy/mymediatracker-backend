@@ -6,24 +6,26 @@ const CommentInteraction = require('../models/commentInteractionModel');
 const User = require('../models/userModel');
 const List = require('../models/listModel');
 const { fireEvent } = require('./eventsController');
+const { sanitizeText, sanitizeUrl, sanitizeIdentifier } = require('../utils/sanitize');
 
 // ─── Create Post ────────────────────────────────────────────────────────────
 
 const createPost = async (req, res) => {
-  const { body, cover_image_url, linked_media, linked_medias, poll, linked_list_id, tag, session_id } = req.body;
+  const { body, linked_media, linked_medias, poll, linked_list_id, tag, session_id } = req.body;
   const userId = req.user._id;
+
+  const safeBody = sanitizeText(body, { maxLen: 2000, allowNewlines: true });
+  const safeSessionId = session_id ? sanitizeIdentifier(session_id, { maxLen: 80 }) : null;
 
   const VALID_TAGS = ['review', 'question', 'recommendation', 'discussion', 'rant'];
   if (tag && !VALID_TAGS.includes(tag)) {
     return res.status(400).json({ error: 'Invalid tag.' });
   }
 
-  if (!body || body.trim().length === 0) {
+  if (!safeBody || safeBody.length === 0) {
     return res.status(400).json({ error: 'Post body is required.' });
   }
-  if (body.trim().length > 2000) {
-    return res.status(400).json({ error: 'Post body must be 2000 characters or fewer.' });
-  }
+  // length already capped by sanitizer (defense-in-depth)
 
   // Validate poll if provided
   if (poll) {
@@ -31,11 +33,9 @@ const createPost = async (req, res) => {
       return res.status(400).json({ error: 'Poll must have between 2 and 4 options.' });
     }
     for (const opt of poll.options) {
-      if (!opt || opt.trim().length === 0) {
+      const safeOpt = sanitizeText(opt, { maxLen: 100, allowNewlines: false });
+      if (!safeOpt) {
         return res.status(400).json({ error: 'Poll options cannot be empty.' });
-      }
-      if (opt.trim().length > 100) {
-        return res.status(400).json({ error: 'Poll options must be 100 characters or fewer.' });
       }
     }
   }
@@ -56,19 +56,18 @@ const createPost = async (req, res) => {
   try {
     const postData = {
       author_id: userId,
-      body: body.trim(),
-      cover_image_url: cover_image_url || null,
+      body: safeBody,
       tag: (tag && VALID_TAGS.includes(tag)) ? tag : null,
     };
 
     if (linked_media && linked_media.name && linked_media.type) {
       postData.linked_media = {
         unique_media_id: linked_media.unique_media_id || null,
-        name: linked_media.name,
-        image_url: linked_media.image_url || null,
+        name: sanitizeText(linked_media.name, { maxLen: 200, allowNewlines: false }),
+        image_url: sanitizeUrl(linked_media.image_url),
         type: linked_media.type,
-        source: linked_media.source || null,
-        media_id: linked_media.media_id || null,
+        source: linked_media.source ? sanitizeIdentifier(linked_media.source, { maxLen: 40 }) : null,
+        media_id: linked_media.media_id ? sanitizeIdentifier(linked_media.media_id, { maxLen: 120 }) : null,
       };
     }
 
@@ -80,17 +79,17 @@ const createPost = async (req, res) => {
         .filter(m => m && m.name && m.type)
         .map(m => ({
           unique_media_id: m.unique_media_id || null,
-          name: m.name,
-          image_url: m.image_url || null,
+          name: sanitizeText(m.name, { maxLen: 200, allowNewlines: false }),
+          image_url: sanitizeUrl(m.image_url),
           type: m.type,
-          source: m.source || null,
-          media_id: m.media_id || null,
+          source: m.source ? sanitizeIdentifier(m.source, { maxLen: 40 }) : null,
+          media_id: m.media_id ? sanitizeIdentifier(m.media_id, { maxLen: 120 }) : null,
         }));
     }
 
     if (poll) {
       postData.poll = {
-        options: poll.options.map(t => ({ text: t.trim(), vote_count: 0 })),
+        options: poll.options.map(t => ({ text: sanitizeText(t, { maxLen: 100, allowNewlines: false }), vote_count: 0 })),
         total_votes: 0,
       };
     }
@@ -114,7 +113,7 @@ const createPost = async (req, res) => {
       has_media: !!(postData.linked_media || postData.linked_medias?.length),
       has_poll: !!postData.poll,
       has_list: !!postData.linked_list_id,
-      session_id: session_id || null,
+      session_id: safeSessionId,
     });
 
     const shaped = shapePost(post, null, linkedListData);
@@ -394,12 +393,13 @@ const addComment = async (req, res) => {
   const { body, session_id } = req.body;
   const userId = req.user._id;
 
-  if (!body || body.trim().length === 0) {
+  const safeBody = sanitizeText(body, { maxLen: 500, allowNewlines: true });
+  const safeSessionId = session_id ? sanitizeIdentifier(session_id, { maxLen: 80 }) : null;
+
+  if (!safeBody || safeBody.length === 0) {
     return res.status(400).json({ error: 'Comment body is required.' });
   }
-  if (body.trim().length > 500) {
-    return res.status(400).json({ error: 'Comment must be 500 characters or fewer.' });
-  }
+  // length already capped by sanitizer (defense-in-depth)
 
   try {
     const post = await Post.findById(postId);
@@ -408,7 +408,7 @@ const addComment = async (req, res) => {
     const comment = await Comment.create({
       post_id: postId,
       author_id: userId,
-      body: body.trim(),
+      body: safeBody,
     });
 
     await Post.findByIdAndUpdate(postId, { $inc: { comment_count: 1 } });
@@ -416,7 +416,7 @@ const addComment = async (req, res) => {
 
     fireEvent(userId, 'post_comment', null, {
       post_id: postId,
-      session_id: session_id || null,
+      session_id: safeSessionId,
     });
 
     return res.status(201).json({
@@ -803,7 +803,6 @@ function shapePost(post, viewerInteractions, linkedList) {
   return {
     _id: obj._id,
     body: obj.body,
-    cover_image_url: obj.cover_image_url,
     tag: obj.tag || null,
     linked_media: obj.linked_media || null,
     linked_medias: obj.linked_medias?.length ? obj.linked_medias : [],

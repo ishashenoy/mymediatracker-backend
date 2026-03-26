@@ -36,6 +36,12 @@ const userSchema = new Schema({
         type: Boolean,
         default: false
     },
+    bio: {
+        type: String,
+        default: '',
+        maxlength: 200,
+        trim: true,
+    },
 
     // --- Demographic & onboarding fields (all optional, collected progressively) ---
     birth_year: {

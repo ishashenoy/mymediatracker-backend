@@ -10,9 +10,109 @@ const User = require('../models/userModel');
 const requireAuth = require('../middleware/requireAuth');
 const { findOrCreateUniqueMedia } = require('../controllers/mediaController');
 const { fireEvent } = require('../controllers/eventsController');
-const multer = require('multer');
-const storage = multer.memoryStorage(); 
-const upload = multer({ storage: storage });
+const { sanitizeText, sanitizeUrl } = require('../utils/sanitize');
+
+// Set privacy for a list
+router.put('/:listId/privacy', requireAuth, async (req, res) => {
+  const { listId } = req.params;
+  const { private: isPrivate } = req.body;
+  const user_id = req.user._id;
+
+  if (!mongoose.Types.ObjectId.isValid(listId)) {
+    return res.status(400).json({ error: 'Invalid listId.' });
+  }
+  if (typeof isPrivate !== 'boolean') {
+    return res.status(400).json({ error: 'Invalid privacy value.' });
+  }
+
+  try {
+    const list = await List.findById(listId);
+    if (!list) return res.status(404).json({ error: 'List not found.' });
+    if (list.user_id.toString() !== user_id.toString()) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    list.private = isPrivate;
+    await list.save();
+    return res.status(200).json({ list });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Reorder lists for the authenticated user
+router.put('/reorder', requireAuth, async (req, res) => {
+  const { listIds } = req.body;
+  const user_id = req.user._id;
+
+  if (!Array.isArray(listIds) || listIds.length === 0) {
+    return res.status(400).json({ error: 'listIds must be a non-empty array.' });
+  }
+
+  try {
+    const ownedLists = await List.find({ user_id, archived: { $ne: true } }).select('_id');
+    const ownedIdSet = new Set(ownedLists.map((list) => list._id.toString()));
+
+    if (ownedIdSet.size !== listIds.length || listIds.some((id) => !ownedIdSet.has(String(id)))) {
+      return res.status(400).json({ error: 'listIds must include all and only your active lists.' });
+    }
+
+    await Promise.all(
+      listIds.map((listId, index) =>
+        List.updateOne(
+          { _id: listId, user_id },
+          { $set: { position: index, updated_at: new Date() } }
+        )
+      )
+    );
+
+    return res.status(200).json({ message: 'List order updated.' });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Reorder items within a list for the authenticated owner
+router.put('/:listId/items/reorder', requireAuth, async (req, res) => {
+  const { listId } = req.params;
+  const { itemIds } = req.body;
+  const user_id = req.user._id;
+
+  if (!mongoose.Types.ObjectId.isValid(listId)) {
+    return res.status(400).json({ error: 'Invalid listId.' });
+  }
+  if (!Array.isArray(itemIds) || itemIds.length === 0) {
+    return res.status(400).json({ error: 'itemIds must be a non-empty array.' });
+  }
+
+  try {
+    const list = await List.findById(listId);
+    if (!list) return res.status(404).json({ error: 'List not found.' });
+    if (list.user_id.toString() !== user_id.toString()) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    const listItems = await ListItem.find({ list_id: listId }).select('_id');
+    const listItemIdSet = new Set(listItems.map((item) => item._id.toString()));
+
+    if (listItemIdSet.size !== itemIds.length || itemIds.some((id) => !listItemIdSet.has(String(id)))) {
+      return res.status(400).json({ error: 'itemIds must include all and only items in this list.' });
+    }
+
+    await Promise.all(
+      itemIds.map((itemId, index) =>
+        ListItem.updateOne(
+          { _id: itemId, list_id: listId },
+          { $set: { position: index } }
+        )
+      )
+    );
+
+    return res.status(200).json({ message: 'List item order updated.' });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
 
 const rateLimit = require('express-rate-limit');
 
@@ -21,9 +121,6 @@ const limiter = rateLimit({
   max: 200, // 100 requests per window
   message: "Too many requests. Try again later."
 });
-
-// Import banner controllers
-const { changeBanner, getBanner } = require('../controllers/userController');
 
 const isAdminUser = (user) => {
   if (!user) return false;
@@ -36,9 +133,11 @@ const isOwnerOrAdmin = (targetUser, requestingUser) => {
   return isAdminUser(requestingUser);
 };
 
-const canViewUserLists = (targetUser, requestingUser) => {
-  if (!targetUser?.private) return true;
-  return isOwnerOrAdmin(targetUser, requestingUser);
+const canViewList = (list, requestingUser) => {
+  if (!list?.private) return true;
+  if (!requestingUser) return false;
+  if (requestingUser._id.toString() === list.user_id.toString()) return true;
+  return isAdminUser(requestingUser);
 };
 
 const getRequestingUser = async (req) => {
@@ -64,13 +163,21 @@ const getRequestingUser = async (req) => {
 
 // Create a new custom list
 router.post('/', requireAuth, async (req, res) => {
-  const { name } = req.body;
+  const { name, private: isPrivate } = req.body;
   const user_id = req.user._id;
-  if (!name || !user_id) {
+  const safeName = sanitizeText(name, { maxLen: 80, allowNewlines: false });
+  if (!safeName || !user_id) {
     return res.status(400).json({ error: 'List name required.' });
   }
   try {
-    const newList = new List({ user_id, name });
+    const currentMax = await List.findOne({ user_id }).sort({ position: -1 }).select('position');
+    const nextPosition = typeof currentMax?.position === 'number' ? currentMax.position + 1 : 0;
+    const newList = new List({
+      user_id,
+      name: safeName,
+      private: Boolean(isPrivate),
+      position: nextPosition,
+    });
     await newList.save();
     return res.status(201).json({ list: newList });
   } catch (error) {
@@ -87,12 +194,14 @@ router.get('/user/:username', async (req, res) => {
     if (!user) return res.status(404).json({ error: 'User not found.' });
 
     const requestingUser = await getRequestingUser(req);
-    if (!canViewUserLists(user, requestingUser)) {
-      return res.status(403).json({ error: 'This account is private.' });
-    }
+    const ownerOrAdmin = isOwnerOrAdmin(user, requestingUser);
 
     // Get all non-archived lists for the user
-    const lists = await List.find({ user_id: user._id, archived: { $ne: true } });
+    const lists = await List.find({
+      user_id: user._id,
+      archived: { $ne: true },
+      ...(ownerOrAdmin ? {} : { private: false }),
+    }).sort({ position: 1, created_at: -1 });
 
     // For each list, get preview items and true count
     const listsWithItems = await Promise.all(
@@ -105,7 +214,7 @@ router.get('/user/:username', async (req, res) => {
               path: 'unique_media_ref'
             }
           })
-          .sort({ createdAt: -1 })
+          .sort({ position: 1, createdAt: -1 })
           .limit(4);
         // True count
         const totalCount = await ListItem.countDocuments({ list_id: list._id });
@@ -173,7 +282,9 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
   const { name, image_url, type, source, media_id, score } = req.body;
   const user_id = req.user._id;
 
-  if (!name || !type) {
+  const safeName = sanitizeText(name, { maxLen: 200, allowNewlines: false });
+  const safeImageUrl = sanitizeUrl(image_url);
+  if (!safeName || !type) {
     return res.status(400).json({ error: 'name and type are required.' });
   }
 
@@ -191,8 +302,8 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
 
     // Find or create UniqueMedia (shared helper also dual-writes to canonical_media)
     const uniqueMedia = await findOrCreateUniqueMedia({
-      name,
-      image_url,
+      name: safeName,
+      image_url: safeImageUrl,
       type,
       source,
       media_id,
@@ -211,11 +322,15 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
     }
 
     // Create ListItem (ignore duplicate errors)
+    let createdListItem = null;
     try {
-      await ListItem.create({
+      const lastItem = await ListItem.findOne({ list_id: listId }).sort({ position: -1 }).select('position');
+      const nextPosition = typeof lastItem?.position === 'number' ? lastItem.position + 1 : 0;
+      createdListItem = await ListItem.create({
         list_id: listId,
         user_id,
         user_media_id: userMedia._id,
+        position: nextPosition,
       });
     } catch (err) {
       if (err.code === 11000) {
@@ -229,7 +344,12 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
       list_id: String(listId),
     }));
 
-    return res.status(201).json({ message: 'Added to list.', userMediaId: userMedia._id });
+    return res.status(201).json({
+      message: 'Added to list.',
+      userMediaId: userMedia._id,
+      listItemId: createdListItem?._id,
+      position: createdListItem?.position,
+    });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
@@ -316,7 +436,8 @@ router.put('/:listId/rename', requireAuth, async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(listId)) {
     return res.status(400).json({ error: 'Invalid listId.' });
   }
-  if (!name || !name.trim()) {
+  const safeName = sanitizeText(name, { maxLen: 80, allowNewlines: false });
+  if (!safeName) {
     return res.status(400).json({ error: 'Name is required.' });
   }
 
@@ -327,7 +448,7 @@ router.put('/:listId/rename', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized.' });
     }
 
-    list.name = name.trim();
+    list.name = safeName;
     await list.save();
 
     return res.status(200).json({ message: 'List renamed successfully.', name: list.name });
@@ -382,7 +503,7 @@ router.get('/user/:username/archived', requireAuth, async (req, res) => {
             path: 'user_media_id',
             populate: { path: 'unique_media_ref' }
           })
-          .sort({ createdAt: -1 })
+          .sort({ position: 1, createdAt: -1 })
           .limit(4);
         const totalCount = await ListItem.countDocuments({ list_id: list._id });
         return {
@@ -405,11 +526,8 @@ router.get('/:listId', async (req, res) => {
     const list = await List.findById(listId);
     if (!list) return res.status(404).json({ error: 'List not found.' });
 
-    const owner = await User.findById(list.user_id).select('_id private');
-    if (!owner) return res.status(404).json({ error: 'User not found.' });
-
     const requestingUser = await getRequestingUser(req);
-    if (!canViewUserLists(owner, requestingUser)) {
+    if (!canViewList(list, requestingUser)) {
       return res.status(403).json({ error: 'This list is private.' });
     }
 
@@ -431,11 +549,8 @@ router.get('/:listId/items', async (req, res) => {
     const list = await List.findById(listId);
     if (!list) return res.status(404).json({ error: 'List not found.' });
 
-    const owner = await User.findById(list.user_id).select('_id private');
-    if (!owner) return res.status(404).json({ error: 'User not found.' });
-
     const requestingUser = await getRequestingUser(req);
-    if (!canViewUserLists(owner, requestingUser)) {
+    if (!canViewList(list, requestingUser)) {
       return res.status(403).json({ error: 'This list is private.' });
     }
 
@@ -446,7 +561,7 @@ router.get('/:listId/items', async (req, res) => {
           path: 'unique_media_ref'
         }
       })
-      .sort({ createdAt: -1 });
+      .sort({ position: 1, createdAt: -1 });
 
     // If no items found, return a 404
     if (items.length === 0) {
@@ -470,11 +585,8 @@ router.get('/:listId/full', async (req, res) => {
     const list = await List.findById(listId);
     if (!list) return res.status(404).json({ error: 'List not found.' });
 
-    const owner = await User.findById(list.user_id).select('_id private');
-    if (!owner) return res.status(404).json({ error: 'User not found.' });
-
     const requestingUser = await getRequestingUser(req);
-    if (!canViewUserLists(owner, requestingUser)) {
+    if (!canViewList(list, requestingUser)) {
       return res.status(403).json({ error: 'This list is private.' });
     }
 
@@ -483,7 +595,7 @@ router.get('/:listId/full', async (req, res) => {
         path: 'user_media_id',
         populate: { path: 'unique_media_ref' }
       })
-      .sort({ createdAt: -1 });
+      .sort({ position: 1, createdAt: -1 });
     return res.status(200).json({
       ...list.toObject(),
       items,
@@ -493,10 +605,6 @@ router.get('/:listId/full', async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
 });
-
-// Banner routes for lists
-router.post('/:listId/banner', limiter, requireAuth, upload.single('image'), changeBanner);
-router.get('/:listId/banner', limiter, requireAuth, getBanner);
 
 // // GET unified user collection (media + lists)
 // router.get('/user/:username/collection', getUserCollection);

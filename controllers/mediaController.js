@@ -10,6 +10,7 @@ const UniqueMedia = require("../models/uniqueMediaModel");
 const User = require("../models/userModel");
 const { createFeedActivity, checkMilestones } = require("../controllers/feedController");
 const { fireEvent } = require("../controllers/eventsController");
+const { sanitizeText, sanitizeUrl } = require("../utils/sanitize");
 
 const trendingCache = new NodeCache({ stdTTL: 86400 });
 
@@ -419,7 +420,16 @@ const createMedia = async (req, res) => {
         dropped_at_progress,
     } = req.body;
 
-    if (!name || !type) {
+    const safeName = sanitizeText(name, { maxLen: 200, allowNewlines: false });
+    const safeImageUrl = sanitizeUrl(image_url);
+    const safeCustomName = custom_name !== undefined ? sanitizeText(custom_name, { maxLen: 200, allowNewlines: false }) : undefined;
+    const safeCustomImageUrl = custom_image_url !== undefined ? sanitizeUrl(custom_image_url) : undefined;
+    const safeReviewText = review_text !== undefined ? sanitizeText(review_text, { maxLen: 2000, allowNewlines: true }) : undefined;
+    const safeSourceOfDiscovery = source_of_discovery !== undefined ? sanitizeText(source_of_discovery, { maxLen: 120, allowNewlines: false }) : undefined;
+    const safePlatform = platform !== undefined ? sanitizeText(platform, { maxLen: 80, allowNewlines: false }) : undefined;
+    const safeFormat = format !== undefined ? sanitizeText(format, { maxLen: 80, allowNewlines: false }) : undefined;
+
+    if (!safeName || !type) {
         return res.status(400).json({ error: "Name and type are required." });
     }
 
@@ -458,8 +468,8 @@ const createMedia = async (req, res) => {
             const finalSource = source || "internal";
 
             uniqueMedia = await findOrCreateUniqueMedia({
-                name,
-                image_url,
+                name: safeName,
+                image_url: safeImageUrl,
                 type,
                 source: finalSource,
                 media_id: finalMediaId,
@@ -480,18 +490,18 @@ const createMedia = async (req, res) => {
             fav: Boolean(fav),
 
             use_custom_display: shouldUseCustomDisplay,
-            custom_name: shouldUseCustomDisplay ? (custom_name || name || "") : "",
-            custom_image_url: shouldUseCustomDisplay ? (custom_image_url || image_url || "") : "",
+            custom_name: shouldUseCustomDisplay ? (safeCustomName || safeName || "") : "",
+            custom_image_url: shouldUseCustomDisplay ? (safeCustomImageUrl || safeImageUrl || "") : "",
 
             // Tier 2/3 fields (all optional)
-            ...(format !== undefined && { format }),
-            ...(platform !== undefined && { platform }),
+            ...(safeFormat !== undefined && { format: safeFormat }),
+            ...(safePlatform !== undefined && { platform: safePlatform }),
             ...(started_at !== undefined && { started_at }),
             ...(finished_at !== undefined && { finished_at }),
             ...(rewatch_count !== undefined && { rewatch_count: Number(rewatch_count) || 0 }),
-            ...(review_text !== undefined && { review_text }),
+            ...(safeReviewText !== undefined && { review_text: safeReviewText }),
             ...(contains_spoilers !== undefined && { contains_spoilers: Boolean(contains_spoilers) }),
-            ...(source_of_discovery !== undefined && { source_of_discovery }),
+            ...(safeSourceOfDiscovery !== undefined && { source_of_discovery: safeSourceOfDiscovery }),
             ...(mood_tags !== undefined && { mood_tags: Array.isArray(mood_tags) ? mood_tags : [] }),
             ...(owned !== undefined && { owned: Boolean(owned) }),
             ...(dropped_at_progress !== undefined && { dropped_at_progress }),
@@ -499,14 +509,22 @@ const createMedia = async (req, res) => {
 
         const populated = await UserMedia.findById(userMedia._id).populate("unique_media_ref");
 
+        let createdListItem = null;
+
         // Create ListItem entry if listId is provided
         if (listId && mongoose.Types.ObjectId.isValid(listId)) {
             const ListItem = require('../models/listItemModel');
             try {
-                await ListItem.create({
+                const lastItem = await ListItem.findOne({ list_id: listId })
+                    .sort({ position: -1 })
+                    .select('position');
+                const nextPosition = typeof lastItem?.position === 'number' ? lastItem.position + 1 : 0;
+
+                createdListItem = await ListItem.create({
                     list_id: listId,
                     user_id: user_id,
                     user_media_id: userMedia._id,
+                    position: nextPosition,
                 });
             } catch (listItemError) {
                 // If ListItem creation fails, log but don't fail the whole operation
@@ -524,7 +542,12 @@ const createMedia = async (req, res) => {
             rating: rating ?? null,
         }));
 
-        res.status(200).json(serializeUserMedia(populated));
+        const serialized = serializeUserMedia(populated);
+        res.status(200).json({
+            ...serialized,
+            listItemId: createdListItem?._id || null,
+            position: typeof createdListItem?.position === 'number' ? createdListItem.position : null,
+        });
     } catch (error) {
         console.error("Error in createMedia:", error);
         res.status(400).json({ error: error.message });
@@ -621,11 +644,11 @@ const updateMedia = async (req, res) => {
         }
 
         if (incoming.custom_name !== undefined) {
-            updates.custom_name = incoming.custom_name;
+            updates.custom_name = sanitizeText(incoming.custom_name, { maxLen: 200, allowNewlines: false });
         }
 
         if (incoming.custom_image_url !== undefined) {
-            updates.custom_image_url = incoming.custom_image_url;
+            updates.custom_image_url = sanitizeUrl(incoming.custom_image_url);
         }
 
         // Tier 2/3 fields
@@ -634,7 +657,12 @@ const updateMedia = async (req, res) => {
             "review_text", "source_of_discovery", "dropped_at_progress",
         ];
         extendedFields.forEach(field => {
-            if (incoming[field] !== undefined) updates[field] = incoming[field];
+            if (incoming[field] === undefined) return;
+            if (field === "review_text") updates[field] = sanitizeText(incoming[field], { maxLen: 2000, allowNewlines: true });
+            else if (field === "source_of_discovery") updates[field] = sanitizeText(incoming[field], { maxLen: 120, allowNewlines: false });
+            else if (field === "platform") updates[field] = sanitizeText(incoming[field], { maxLen: 80, allowNewlines: false });
+            else if (field === "format") updates[field] = sanitizeText(incoming[field], { maxLen: 80, allowNewlines: false });
+            else updates[field] = incoming[field];
         });
 
         if (incoming.rewatch_count !== undefined) {
@@ -686,58 +714,6 @@ const updateMedia = async (req, res) => {
         console.error("Error in updateMedia:", error);
         res.status(500).json({ error: error.message });
     }
-};
-
-// Uploading media covers
-const uploadCover = async (req, res) => {
-    const user_id = req.user._id;
-
-    if (!req.file) {
-        return res.status(400).json({ error: "No image file provided" });
-    }
-
-    if (req.file.size > 5 * 1024 * 1024) {
-        return res.status(400).json({ error: "File too large" });
-    }
-
-    const uniqueId = crypto.randomBytes(4).toString("hex");
-
-    return cloudinary.uploader
-        .upload_stream(
-            {
-                public_id: `banners/${user_id}_${uniqueId}`,
-                format: "webp",
-                transformation: [
-                    { width: 300, height: 500, crop: "fill" },
-                    { quality: "auto:low", fetch_format: "auto" },
-                    { effect: "improve" },
-                    { dpr: "auto" },
-                    { compression: "medium" },
-                ],
-            },
-            (error, result) => {
-                if (error) {
-                    return res.status(400).json({ error });
-                }
-                // Log upload to audit trail (fire-and-forget)
-                setImmediate(async () => {
-                    try {
-                        const UserUpload = require("../models/userUploadModel");
-                        await UserUpload.create({
-                            user_id,
-                            cloudinary_public_id: result.public_id,
-                            resource_type: "cover",
-                            status: "active",
-                        });
-                    } catch (e) { /* silent */ }
-                });
-                return res.status(200).json({
-                    message: "Cover uploaded",
-                    image_url: result.secure_url,
-                });
-            }
-        )
-        .end(req.file.buffer);
 };
 
 // IMPORT media from Goodreads
@@ -863,7 +839,6 @@ module.exports = {
     deleteMedia,
     updateMedia,
     importMedia,
-    uploadCover,
     suggestMediaMatches,
     findOrCreateUniqueMedia,
 };

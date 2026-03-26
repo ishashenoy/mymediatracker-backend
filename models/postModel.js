@@ -32,10 +32,6 @@ const postSchema = new mongoose.Schema({
     maxlength: 2000,
     trim: true,
   },
-  cover_image_url: {
-    type: String,
-    default: null,
-  },
 
   // ─── Attachments ─────────────────────────────────────────────────────────────
   linked_media: {

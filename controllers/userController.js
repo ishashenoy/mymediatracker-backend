@@ -10,6 +10,7 @@ const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const bcrypt = require('bcrypt');
 const validator = require('validator');
+const { sanitizeText } = require('../utils/sanitize');
 
 cloudinary.config({
     cloudinary_url: process.env.CLOUDINARY_URL
@@ -216,38 +217,6 @@ const changeIcon = async (req, res) => {
         if (!res.headersSent) {
             return res.status(500).json({ error: error.message || "Failed to process icon" });
         }
-    }
-};
-
-// GET user's banners
-const getBanner = async (req, res) => {
-    const { listId } = req.params;
-    const List = require('../models/listModel');
-    try {
-        const list = await List.findById(listId);
-        if (!list) {
-            return res.status(404).json({ message: 'List not found' });
-        }
-        return res.status(200).json({ banner_url: list.banner_url });
-    } catch (error) {
-        return res.status(500).json({ message: 'Internal Server Error' });
-    }
-}
-
-const changeBanner = async (req, res) => {
-    const { listId } = req.params;
-    const List = require('../models/listModel');
-    const { banner_url } = req.body;
-    try {
-        const list = await List.findById(listId);
-        if (!list) {
-            return res.status(404).send({ message: 'List not found' });
-        }
-        list.banner_url = banner_url;
-        await list.save();
-        return res.status(200).send(list);
-    } catch (error) {
-        return res.status(500).send({ message: 'Internal Server Error' });
     }
 };
 
@@ -519,18 +488,19 @@ const getUserProfile = async (req, res) => {
         }
 
         const requestingUser = await getRequestingUserFromToken(req);
-        const canViewLists = !user.private
-            || (requestingUser && requestingUser._id.toString() === user._id.toString())
+        const isOwnerOrAdmin = (requestingUser && requestingUser._id.toString() === user._id.toString())
             || isAdminUser(requestingUser);
 
         // Get user's lists
         const List = require('../models/listModel');
-        const userLists = canViewLists
-            ? await List.find({
-                user_id: user._id,
-                archived: false
-            }).sort({ created_at: -1 })
-            : [];
+        const userListsQuery = {
+            user_id: user._id,
+            archived: false,
+            ...(isOwnerOrAdmin ? {} : { private: false }),
+        };
+
+        const userLists = await List.find(userListsQuery)
+            .sort({ position: 1, created_at: -1 });
 
         // Get user's connections (followers/following count)
         const followersCount = user.followers ? user.followers.length : 0;
@@ -559,7 +529,6 @@ const getUserProfile = async (req, res) => {
 
         // Format user lists with media counts and preview items
         const ListItem = require('../models/listItemModel');
-        const UserMedia = require('../models/userMediaModel');
         const serializeUserMedia = (media) => {
             if (!media) return null;
             return {
@@ -587,14 +556,15 @@ const getUserProfile = async (req, res) => {
                             path: 'unique_media_ref'
                         }
                     })
-                    .sort({ createdAt: -1 })
+                    .sort({ position: 1, createdAt: -1 })
                     .limit(4);
                 
                 return {
                     _id: list._id,
                     name: list.name,
                     system_key: list.system_key,
-                    banner_url: list.banner_url,
+                    private: Boolean(list.private),
+                    position: typeof list.position === 'number' ? list.position : 0,
                     created_at: list.created_at,
                     updated_at: list.updated_at,
                     media_count: mediaCount,
@@ -609,6 +579,7 @@ const getUserProfile = async (req, res) => {
                 _id: user._id,
                 username: user.username,
                 icon: user.icon,
+                bio: user.bio || '',
                 private: user.private,
                 created_at: user.createdAt
             },
@@ -619,7 +590,7 @@ const getUserProfile = async (req, res) => {
                 total_media: listDetails.reduce((sum, list) => sum + list.media_count, 0)
             },
             permissions: {
-                can_view_lists: canViewLists
+                can_view_lists: true
             }
         };
 
@@ -658,6 +629,26 @@ const updateOnboarding = async (req, res) => {
     }
 };
 
+const updateBio = async (req, res) => {
+    const { username } = req.params;
+    const senderId = req.user._id;
+
+    try {
+        const user = await User.findOne({ username });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        if (!user._id.equals(senderId)) return res.status(401).json({ error: 'Not authorized' });
+
+        const incomingBio = typeof req.body.bio === 'string' ? req.body.bio : '';
+        const sanitizedBio = sanitizeText(incomingBio, { maxLen: 200, allowNewlines: true });
+        user.bio = sanitizedBio;
+        await user.save();
+
+        return res.status(200).json({ bio: user.bio });
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to update bio' });
+    }
+}
+
 module.exports = {
     signupUser,
     loginUser,
@@ -665,13 +656,12 @@ module.exports = {
     unfollowRequest,
     changePrivacy,
     changeIcon,
-    changeBanner,
     getConnections,
     getIcon,
-    getBanner,
     getUserProfile,
     searchUsers,
     sendPasswordResetEmail,
     resetPassword,
     updateOnboarding,
+    updateBio,
 }
