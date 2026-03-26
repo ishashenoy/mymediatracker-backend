@@ -158,12 +158,7 @@ router.get('/home', limiter, requireAuth, async (req, res) => {
   try {
     // Feed (not cached — user-specific and cursor-paginated)
     const feedPromise = (async () => {
-      const privateUsers = await User.find({ private: true, _id: { $ne: userId } })
-        .select('_id')
-        .lean();
-      const privateUserIds = privateUsers.map(u => u._id);
-
-      const query = { author_id: { $nin: privateUserIds } };
+      const query = {};
       if (cursor) query.created_at = { $lt: new Date(cursor) };
 
       const rawPosts = await Post.find(query)

@@ -20,6 +20,31 @@ const createToken = (_id) => {
     return jwt.sign({_id}, process.env.SECRET, { expiresIn: '7d' })
 }
 
+const isAdminUser = (user) => {
+    if (!user) return false;
+    return user.role === 'admin' || user.isAdmin === true || user.is_admin === true;
+};
+
+const getRequestingUserFromToken = async (req) => {
+    if (req.requestingUser !== undefined) return req.requestingUser;
+
+    req.requestingUser = null;
+    const { authorization } = req.headers;
+    if (!authorization || !authorization.startsWith('Bearer ')) return req.requestingUser;
+
+    const token = authorization.split(' ')[1];
+    if (!token) return req.requestingUser;
+
+    try {
+        const { _id } = jwt.verify(token, process.env.SECRET);
+        req.requestingUser = await User.findById(_id).select('_id username following role isAdmin is_admin');
+    } catch (error) {
+        req.requestingUser = null;
+    }
+
+    return req.requestingUser;
+};
+
 const verifyRecaptcha = async (token) => {
   const secret = process.env.RECAPTCHA_SECRET_KEY;
 
@@ -493,12 +518,19 @@ const getUserProfile = async (req, res) => {
             return res.status(404).json({ error: 'User not found' });
         }
 
+        const requestingUser = await getRequestingUserFromToken(req);
+        const canViewLists = !user.private
+            || (requestingUser && requestingUser._id.toString() === user._id.toString())
+            || isAdminUser(requestingUser);
+
         // Get user's lists
         const List = require('../models/listModel');
-        const userLists = await List.find({ 
-            user_id: user._id, 
-            archived: false 
-        }).sort({ created_at: -1 });
+        const userLists = canViewLists
+            ? await List.find({
+                user_id: user._id,
+                archived: false
+            }).sort({ created_at: -1 })
+            : [];
 
         // Get user's connections (followers/following count)
         const followersCount = user.followers ? user.followers.length : 0;
@@ -506,8 +538,7 @@ const getUserProfile = async (req, res) => {
 
         // Get detailed connection info if requesting user is authenticated
         let detailedConnections = null;
-        if (req.user) {
-            const requestingUser = await User.findById(req.user._id);
+        if (requestingUser) {
             const isFollowing = requestingUser.following && requestingUser.following.includes(username);
             const isFollowedByUser = user.followers && user.followers.includes(requestingUser.username);
             
@@ -586,6 +617,9 @@ const getUserProfile = async (req, res) => {
             stats: {
                 total_lists: userLists.length,
                 total_media: listDetails.reduce((sum, list) => sum + list.media_count, 0)
+            },
+            permissions: {
+                can_view_lists: canViewLists
             }
         };
 

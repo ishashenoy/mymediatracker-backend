@@ -1,10 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
+const jwt = require('jsonwebtoken');
 const List = require('../models/listModel');
 const ListItem = require('../models/listItemModel');
 const UserMedia = require('../models/userMediaModel');
 const UniqueMedia = require('../models/uniqueMediaModel');
+const User = require('../models/userModel');
 const requireAuth = require('../middleware/requireAuth');
 const { findOrCreateUniqueMedia } = require('../controllers/mediaController');
 const { fireEvent } = require('../controllers/eventsController');
@@ -22,6 +24,42 @@ const limiter = rateLimit({
 
 // Import banner controllers
 const { changeBanner, getBanner } = require('../controllers/userController');
+
+const isAdminUser = (user) => {
+  if (!user) return false;
+  return user.role === 'admin' || user.isAdmin === true || user.is_admin === true;
+};
+
+const isOwnerOrAdmin = (targetUser, requestingUser) => {
+  if (!targetUser || !requestingUser) return false;
+  if (requestingUser._id.toString() === targetUser._id.toString()) return true;
+  return isAdminUser(requestingUser);
+};
+
+const canViewUserLists = (targetUser, requestingUser) => {
+  if (!targetUser?.private) return true;
+  return isOwnerOrAdmin(targetUser, requestingUser);
+};
+
+const getRequestingUser = async (req) => {
+  if (req.requestingUser !== undefined) return req.requestingUser;
+
+  req.requestingUser = null;
+  const { authorization } = req.headers;
+  if (!authorization || !authorization.startsWith('Bearer ')) return req.requestingUser;
+
+  const token = authorization.split(' ')[1];
+  if (!token) return req.requestingUser;
+
+  try {
+    const { _id } = jwt.verify(token, process.env.SECRET);
+    req.requestingUser = await User.findById(_id).select('_id username role isAdmin is_admin');
+  } catch (error) {
+    req.requestingUser = null;
+  }
+
+  return req.requestingUser;
+};
 
 
 // Create a new custom list
@@ -44,10 +82,14 @@ router.post('/', requireAuth, async (req, res) => {
 // Get all lists for a user (with preview items and totalCount)
 router.get('/user/:username', async (req, res) => {
   const { username } = req.params;
-  const User = require('../models/userModel');
   try {
     const user = await User.findOne({ username });
     if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    const requestingUser = await getRequestingUser(req);
+    if (!canViewUserLists(user, requestingUser)) {
+      return res.status(403).json({ error: 'This account is private.' });
+    }
 
     // Get all non-archived lists for the user
     const lists = await List.find({ user_id: user._id, archived: { $ne: true } });
@@ -322,7 +364,6 @@ router.put('/:listId/restore', requireAuth, async (req, res) => {
 // Get all archived lists for the authenticated user
 router.get('/user/:username/archived', requireAuth, async (req, res) => {
   const { username } = req.params;
-  const User = require('../models/userModel');
   
   try {
     // Only allow users to see their own archived lists
@@ -363,6 +404,15 @@ router.get('/:listId', async (req, res) => {
   try {
     const list = await List.findById(listId);
     if (!list) return res.status(404).json({ error: 'List not found.' });
+
+    const owner = await User.findById(list.user_id).select('_id private');
+    if (!owner) return res.status(404).json({ error: 'User not found.' });
+
+    const requestingUser = await getRequestingUser(req);
+    if (!canViewUserLists(owner, requestingUser)) {
+      return res.status(403).json({ error: 'This list is private.' });
+    }
+
     return res.status(200).json(list);
   } catch (error) {
     return res.status(500).json({ error: error.message });
@@ -376,6 +426,17 @@ router.get('/:listId/items', async (req, res) => {
     // Check if the listId is valid
     if (!listId || listId.length !== 24) {
       return res.status(400).json({ error: 'Invalid listId format.' });
+    }
+
+    const list = await List.findById(listId);
+    if (!list) return res.status(404).json({ error: 'List not found.' });
+
+    const owner = await User.findById(list.user_id).select('_id private');
+    if (!owner) return res.status(404).json({ error: 'User not found.' });
+
+    const requestingUser = await getRequestingUser(req);
+    if (!canViewUserLists(owner, requestingUser)) {
+      return res.status(403).json({ error: 'This list is private.' });
     }
 
     const items = await ListItem.find({ list_id: listId })
@@ -408,6 +469,15 @@ router.get('/:listId/full', async (req, res) => {
     }
     const list = await List.findById(listId);
     if (!list) return res.status(404).json({ error: 'List not found.' });
+
+    const owner = await User.findById(list.user_id).select('_id private');
+    if (!owner) return res.status(404).json({ error: 'User not found.' });
+
+    const requestingUser = await getRequestingUser(req);
+    if (!canViewUserLists(owner, requestingUser)) {
+      return res.status(403).json({ error: 'This list is private.' });
+    }
+
     const items = await ListItem.find({ list_id: listId })
       .populate({
         path: 'user_media_id',
