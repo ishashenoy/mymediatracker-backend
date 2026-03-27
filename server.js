@@ -50,6 +50,7 @@ app.use('/api/lists', require('./routes/lists'));
 app.use('/api/events', require('./routes/events'));
 app.use('/api/posts', require('./routes/posts'));
 app.use('/api/aggregate', require('./routes/aggregate'));
+app.use('/api/notifications', require('./routes/notifications'));
 
 //conecting to db
 mongoose.connect(process.env.MONGO_URI)
@@ -63,6 +64,7 @@ mongoose.connect(process.env.MONGO_URI)
     require('./models/postModel');
     require('./models/postInteractionModel');
     require('./models/commentModel');
+    require('./models/notificationModel');
 
     // listen for requests
     app.listen(process.env.PORT || 3001, () => {

@@ -1,6 +1,8 @@
 const express = require('express');
+const multer = require('multer');
 const {
     createMedia,
+    uploadMediaImage,
     getMedias,
     getTrendingMedia,
     deleteMedia,
@@ -19,6 +21,16 @@ const limiter = rateLimit({
 });
 
 const router = express.Router();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (_req, file, cb) => {
+    if (!file?.mimetype?.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed'));
+    }
+    return cb(null, true);
+  },
+});
 
 router.use(limiter);
 
@@ -93,6 +105,19 @@ router.get('/', getMedias);
 
 //POST a new media
 router.post('/', maintenanceMode, createMedia);
+
+// Upload a custom media cover image
+router.post('/upload-image', maintenanceMode, (req, res, next) => {
+  upload.single('image')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'Image too large. Max size is 5MB.' });
+      }
+      return res.status(400).json({ error: err.message || 'Invalid image upload.' });
+    }
+    return next();
+  });
+}, uploadMediaImage);
 
 //DELETE a media
 router.delete('/:id', maintenanceMode, deleteMedia);

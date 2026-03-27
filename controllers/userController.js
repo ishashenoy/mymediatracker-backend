@@ -11,6 +11,7 @@ const cloudinary = require('cloudinary').v2;
 const bcrypt = require('bcrypt');
 const validator = require('validator');
 const { sanitizeText } = require('../utils/sanitize');
+const { createNotification } = require('./notificationController');
 
 cloudinary.config({
     cloudinary_url: process.env.CLOUDINARY_URL
@@ -24,6 +25,44 @@ const createToken = (_id) => {
 const isAdminUser = (user) => {
     if (!user) return false;
     return user.role === 'admin' || user.isAdmin === true || user.is_admin === true;
+};
+
+const hasAsciiChunk = (buffer, chunk) => {
+    if (!Buffer.isBuffer(buffer) || !chunk) return false;
+    return buffer.indexOf(Buffer.from(chunk, 'ascii')) !== -1;
+};
+
+const isAnimatedImageUpload = (file) => {
+    if (!file || !Buffer.isBuffer(file.buffer)) return false;
+
+    const mime = (file.mimetype || '').toLowerCase();
+    if (mime === 'image/gif') return true;
+
+    // APNG files contain the animation control chunk.
+    if (mime === 'image/png' && hasAsciiChunk(file.buffer, 'acTL')) {
+        return true;
+    }
+
+    // Animated WebP files include an ANIM chunk and/or animation bit in VP8X.
+    const isWebpMime = mime === 'image/webp';
+    const isRiffWebp = hasAsciiChunk(file.buffer.subarray(0, 32), 'RIFF')
+        && hasAsciiChunk(file.buffer.subarray(0, 32), 'WEBP');
+    if (isWebpMime || isRiffWebp) {
+        if (hasAsciiChunk(file.buffer, 'ANIM')) {
+            return true;
+        }
+
+        const vp8xOffset = file.buffer.indexOf(Buffer.from('VP8X', 'ascii'));
+        if (vp8xOffset !== -1) {
+            const flagsByteIndex = vp8xOffset + 8;
+            if (file.buffer.length > flagsByteIndex) {
+                const hasAnimationFlag = (file.buffer[flagsByteIndex] & 0x02) === 0x02;
+                if (hasAnimationFlag) return true;
+            }
+        }
+    }
+
+    return false;
 };
 
 const getRequestingUserFromToken = async (req) => {
@@ -158,6 +197,14 @@ const changeIcon = async (req, res) => {
         // this is the sender's trusted user id verified by the JWT
         const senderId = req.user._id;
         if (!user._id.equals(senderId)) return res.status(401).json({ error: "Not authorized" });
+
+        if (!req.file || !Buffer.isBuffer(req.file.buffer)) {
+            return res.status(400).json({ error: "No image file was uploaded" });
+        }
+
+        if (isAnimatedImageUpload(req.file)) {
+            return res.status(403).json({ error: "Animated profile pictures are currently disabled." });
+        }
 
         // Delete old icon if it exists
         if (user.icon) {
@@ -294,6 +341,13 @@ const followRequest = async (req, res) => {
                     { upsert: true, new: true }
                 );
                 await fireEvent(senderId, 'follow', null, { followee: username });
+                await createNotification({
+                    recipientId: receivingUser._id,
+                    actorId: senderId,
+                    type: 'new_follower',
+                    entityType: 'follow',
+                    entityId: receivingUser._id,
+                });
             } catch (e) { /* silent */ }
         });
 

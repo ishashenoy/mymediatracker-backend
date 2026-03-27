@@ -6,6 +6,7 @@ const CommentInteraction = require('../models/commentInteractionModel');
 const User = require('../models/userModel');
 const List = require('../models/listModel');
 const { fireEvent } = require('./eventsController');
+const { createNotification } = require('./notificationController');
 const { sanitizeText, sanitizeUrl, sanitizeIdentifier } = require('../utils/sanitize');
 
 // ─── Create Post ────────────────────────────────────────────────────────────
@@ -296,6 +297,16 @@ async function toggleInteraction(req, res, type) {
         feed_position: feed_position ?? null,
         session_id: session_id || null,
       });
+
+      if (type === 'like' && updatedPost?.author_id) {
+        createNotification({
+          recipientId: updatedPost.author_id,
+          actorId: userId,
+          type: 'post_liked',
+          entityType: 'post',
+          entityId: postId,
+        });
+      }
     }
 
     if (!updatedPost) return res.status(404).json({ error: 'Post not found.' });
@@ -417,6 +428,14 @@ const addComment = async (req, res) => {
     fireEvent(userId, 'post_comment', null, {
       post_id: postId,
       session_id: safeSessionId,
+    });
+
+    createNotification({
+      recipientId: post.author_id,
+      actorId: userId,
+      type: 'post_commented',
+      entityType: 'post',
+      entityId: postId,
     });
 
     return res.status(201).json({
@@ -779,6 +798,16 @@ async function toggleCommentInteraction(req, res, type) {
         { new: true }
       );
       active = true;
+
+      if (type === 'like' && updatedComment?.author_id) {
+        createNotification({
+          recipientId: updatedComment.author_id,
+          actorId: userId,
+          type: 'comment_liked',
+          entityType: 'comment',
+          entityId: commentId,
+        });
+      }
     }
 
     if (!updatedComment) return res.status(404).json({ error: 'Comment not found.' });

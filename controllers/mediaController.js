@@ -554,6 +554,46 @@ const createMedia = async (req, res) => {
     }
 };
 
+// POST upload custom media cover image
+const uploadMediaImage = async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: "Image file is required." });
+    }
+
+    if (!req.file.mimetype || !req.file.mimetype.startsWith("image/")) {
+        return res.status(400).json({ error: "Only image files are allowed." });
+    }
+
+    try {
+        const userId = String(req.user?._id || "").trim();
+        if (!userId) {
+            return res.status(401).json({ error: "Not authorized" });
+        }
+
+        const result = await new Promise((resolve, reject) => {
+            cloudinary.uploader.upload_stream(
+                {
+                    public_id: `media-covers/${userId}/${Date.now()}`,
+                    overwrite: false,
+                    format: "webp",
+                    transformation: [
+                        { width: 1200, height: 1800, crop: "limit" },
+                        { quality: "auto:good", fetch_format: "auto" },
+                    ],
+                },
+                (error, uploadResult) => {
+                    if (error) reject(error);
+                    else resolve(uploadResult);
+                }
+            ).end(req.file.buffer);
+        });
+
+        return res.status(200).json({ image_url: result.secure_url });
+    } catch (error) {
+        return res.status(500).json({ error: "Failed to upload image." });
+    }
+};
+
 // DELETE a media
 const deleteMedia = async (req, res) => {
     try {
@@ -833,6 +873,7 @@ const importMedia = async (req, res) => {
 
 module.exports = {
     createMedia,
+    uploadMediaImage,
     getProfileMedia,
     getTrendingMedia,
     getMedias,
