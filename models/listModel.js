@@ -7,7 +7,8 @@ const listSchema = new Schema(
     user_id: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }, // Reference to the user who created the list
     name: { type: String, required: true }, // Name of the list (e.g., "Anime", "Favorites")
     system_key: { type: String, default: null }, // system lists (e.g., 'anime', 'movie') or null for custom lists
-    private: { type: Boolean, default: false }, // Whether this specific list is private
+    // Only documents with private: true are hidden from other users; missing field = public (legacy data).
+    private: { type: Boolean, default: false },
     position: { type: Number, default: 0 }, // Manual ordering position among user's lists
     created_at: { type: Date, default: Date.now }, // Date when the list was created
     updated_at: { type: Date, default: Date.now }, // Date when the list was last updated

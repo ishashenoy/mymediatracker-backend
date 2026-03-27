@@ -138,6 +138,7 @@ const loginUser = async (req, res) => {
     const token = createToken(user._id);
     return res.status(200).json({
       username: user.username,
+      id: user._id.toString(),
       token,
       icon: user.icon || null,
       is_creator_badge: toCreatorBadge(user.is_creator_badge),
@@ -457,7 +458,7 @@ const signupUser = async (req, res) => {
   try {
     const user = await User.signup(email, password, username);
     const token = createToken(user._id);
-    return res.status(200).json({ username, token });
+    return res.status(200).json({ username, id: user._id.toString(), token });
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
@@ -592,10 +593,15 @@ const getUserProfile = async (req, res) => {
 
         // Get user's lists
         const List = require('../models/listModel');
+        const totalNonArchivedLists = await List.countDocuments({
+            user_id: user._id,
+            archived: false,
+        });
+
         const userListsQuery = {
             user_id: user._id,
             archived: false,
-            ...(isOwnerOrAdmin ? {} : { private: false }),
+            ...(isOwnerOrAdmin ? {} : { private: { $ne: true } }),
         };
 
         const userLists = await List.find(userListsQuery)
@@ -662,7 +668,7 @@ const getUserProfile = async (req, res) => {
                     _id: list._id,
                     name: list.name,
                     system_key: list.system_key,
-                    private: Boolean(list.private),
+                    private: list.private === true,
                     position: typeof list.position === 'number' ? list.position : 0,
                     created_at: list.created_at,
                     updated_at: list.updated_at,
@@ -687,6 +693,7 @@ const getUserProfile = async (req, res) => {
             lists: listDetails,
             stats: {
                 total_lists: userLists.length,
+                total_non_archived_lists: totalNonArchivedLists,
                 total_media: listDetails.reduce((sum, list) => sum + list.media_count, 0)
             },
             permissions: {

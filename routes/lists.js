@@ -134,7 +134,7 @@ const isOwnerOrAdmin = (targetUser, requestingUser) => {
 };
 
 const canViewList = (list, requestingUser) => {
-  if (!list?.private) return true;
+  if (list?.private !== true) return true;
   if (!requestingUser) return false;
   if (requestingUser._id.toString() === list.user_id.toString()) return true;
   return isAdminUser(requestingUser);
@@ -200,7 +200,7 @@ router.get('/user/:username', async (req, res) => {
     const lists = await List.find({
       user_id: user._id,
       archived: { $ne: true },
-      ...(ownerOrAdmin ? {} : { private: false }),
+      ...(ownerOrAdmin ? {} : { private: { $ne: true } }),
     }).sort({ position: 1, created_at: -1 });
 
     // For each list, get preview items and true count
