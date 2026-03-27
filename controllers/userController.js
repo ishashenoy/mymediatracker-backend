@@ -27,6 +27,18 @@ const isAdminUser = (user) => {
     return user.role === 'admin' || user.isAdmin === true || user.is_admin === true;
 };
 
+const toCreatorBadge = (value) => value === true;
+
+const serializePublicUser = (user) => {
+    if (!user) return null;
+    return {
+        _id: user._id,
+        username: user.username,
+        icon: user.icon || null,
+        is_creator_badge: toCreatorBadge(user.is_creator_badge),
+    };
+};
+
 const hasAsciiChunk = (buffer, chunk) => {
     if (!Buffer.isBuffer(buffer) || !chunk) return false;
     return buffer.indexOf(Buffer.from(chunk, 'ascii')) !== -1;
@@ -77,7 +89,7 @@ const getRequestingUserFromToken = async (req) => {
 
     try {
         const { _id } = jwt.verify(token, process.env.SECRET);
-        req.requestingUser = await User.findById(_id).select('_id username following role isAdmin is_admin');
+        req.requestingUser = await User.findById(_id).select('_id username following role isAdmin is_admin is_creator_badge');
     } catch (error) {
         req.requestingUser = null;
     }
@@ -124,7 +136,12 @@ const loginUser = async (req, res) => {
   try {
     const user = await User.login(email, password);
     const token = createToken(user._id);
-    return res.status(200).json({ username: user.username, token, icon: user.icon || null });
+    return res.status(200).json({
+      username: user.username,
+      token,
+      icon: user.icon || null,
+      is_creator_badge: toCreatorBadge(user.is_creator_badge),
+    });
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
@@ -138,9 +155,36 @@ const getConnections = async (req, res) => {
     //Checking if the username exists
     if (!user) return res.status(404).json({error: 'User does not exist.'});
 
-    const userFollowers = user.followers;
-    const userFollowing = user.following;
-    return res.status(200).json({followers: userFollowers, following: userFollowing});
+    const userFollowers = Array.isArray(user.followers) ? user.followers : [];
+    const userFollowing = Array.isArray(user.following) ? user.following : [];
+
+    const [followerUsers, followingUsers] = await Promise.all([
+        userFollowers.length
+            ? User.find({ username: { $in: userFollowers } }).select('username icon is_creator_badge').lean()
+            : [],
+        userFollowing.length
+            ? User.find({ username: { $in: userFollowing } }).select('username icon is_creator_badge').lean()
+            : [],
+    ]);
+
+    const followersByUsername = new Map(followerUsers.map((u) => [u.username, u]));
+    const followingByUsername = new Map(followingUsers.map((u) => [u.username, u]));
+
+    const followers = userFollowers.map((uname) => {
+        const doc = followersByUsername.get(uname);
+        return doc
+            ? serializePublicUser(doc)
+            : { username: uname, icon: null, is_creator_badge: false };
+    });
+
+    const following = userFollowing.map((uname) => {
+        const doc = followingByUsername.get(uname);
+        return doc
+            ? serializePublicUser(doc)
+            : { username: uname, icon: null, is_creator_badge: false };
+    });
+
+    return res.status(200).json({followers, following});
 }
 
 // GET user's icon
@@ -280,13 +324,14 @@ const searchUsers = async (req, res) => {
     try {
         // Search by username or email (partial, case-insensitive)
         const users = await User.find({ username: { $regex: query, $options: 'i' }})
-        .select('username icon private')
+        .select('username icon private is_creator_badge')
         .limit(20);
 
         const results = users.map(u => ({
             username: u.username,
             icon: u.icon || null,
-            private: u.private
+            private: u.private,
+            is_creator_badge: toCreatorBadge(u.is_creator_badge),
         }));
 
         return res.status(200).json(results);
@@ -633,6 +678,7 @@ const getUserProfile = async (req, res) => {
                 _id: user._id,
                 username: user.username,
                 icon: user.icon,
+                is_creator_badge: toCreatorBadge(user.is_creator_badge),
                 bio: user.bio || '',
                 private: user.private,
                 created_at: user.createdAt

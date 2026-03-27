@@ -100,7 +100,7 @@ const createPost = async (req, res) => {
     }
 
     const post = await Post.create(postData);
-    await post.populate('author_id', 'username icon');
+    await post.populate('author_id', 'username icon is_creator_badge');
 
     // Populate linked list name for response
     let linkedListData = null;
@@ -162,7 +162,7 @@ const getFeedPosts = async (req, res) => {
     if (cursor) query.created_at = { $lt: new Date(cursor) };
 
     const rawPosts = await Post.find(query)
-      .populate('author_id', 'username icon')
+      .populate('author_id', 'username icon is_creator_badge')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -197,7 +197,7 @@ const getPostsByMedia = async (req, res) => {
     if (cursor) query.created_at = { $lt: new Date(cursor) };
 
     const rawPosts = await Post.find(query)
-      .populate('author_id', 'username icon')
+      .populate('author_id', 'username icon is_creator_badge')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -229,7 +229,7 @@ const getPostsByList = async (req, res) => {
     if (cursor) query.created_at = { $lt: new Date(cursor) };
 
     const rawPosts = await Post.find(query)
-      .populate('author_id', 'username icon')
+      .populate('author_id', 'username icon is_creator_badge')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -423,7 +423,7 @@ const addComment = async (req, res) => {
     });
 
     await Post.findByIdAndUpdate(postId, { $inc: { comment_count: 1 } });
-    await comment.populate('author_id', 'username icon');
+    await comment.populate('author_id', 'username icon is_creator_badge');
 
     fireEvent(userId, 'post_comment', null, {
       post_id: postId,
@@ -468,7 +468,7 @@ const getComments = async (req, res) => {
     if (cursor) query.created_at = { $gt: new Date(cursor) };
 
     const rawComments = await Comment.find(query)
-      .populate('author_id', 'username icon')
+      .populate('author_id', 'username icon is_creator_badge')
       .sort({ created_at: 1 })
       .limit(limit + 1)
       .lean();
@@ -526,7 +526,7 @@ const getBookmarkedPosts = async (req, res) => {
 
     const postIds = interactions.map(i => i.post_id);
     const posts = await Post.find({ _id: { $in: postIds } })
-      .populate('author_id', 'username icon')
+      .populate('author_id', 'username icon is_creator_badge')
       .lean();
 
     // Preserve bookmark-date order
@@ -567,7 +567,7 @@ const getBookmarkedComments = async (req, res) => {
 
     const commentIds = interactions.map(i => i.comment_id);
     const comments = await Comment.find({ _id: { $in: commentIds } })
-      .populate('author_id', 'username icon')
+      .populate('author_id', 'username icon is_creator_badge')
       .lean();
 
     const postIds = [...new Set(comments.map(c => c.post_id.toString()))];
@@ -613,7 +613,7 @@ const getUserPosts = async (req, res) => {
     const ownPostQuery = { author_id: profileUserId };
     if (dateFilter) ownPostQuery.created_at = dateFilter;
     const ownPosts = await Post.find(ownPostQuery)
-      .populate('author_id', 'username icon')
+      .populate('author_id', 'username icon is_creator_badge')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -629,7 +629,7 @@ const getUserPosts = async (req, res) => {
     if (repostInteractions.length > 0) {
       const repostPostIds = repostInteractions.map(i => i.post_id);
       const repostedPosts = await Post.find({ _id: { $in: repostPostIds } })
-        .populate('author_id', 'username icon')
+        .populate('author_id', 'username icon is_creator_badge')
         .lean();
       const repostDateMap = new Map(
         repostInteractions.map(i => [i.post_id.toString(), i.created_at])
@@ -680,7 +680,7 @@ const getSuggestions = async (req, res) => {
       { $addFields: { follower_count: { $size: { $ifNull: ['$followers', []] } } } },
       { $sort: { follower_count: -1 } },
       { $limit: 5 },
-      { $project: { username: 1, icon: 1 } },
+      { $project: { username: 1, icon: 1, is_creator_badge: { $eq: ['$is_creator_badge', true] } } },
     ]);
 
     return res.status(200).json({ suggestions });

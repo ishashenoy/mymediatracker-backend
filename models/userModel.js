@@ -31,6 +31,10 @@ const userSchema = new Schema({
         type: String,
         required: false
     },
+    is_creator_badge: {
+        type: Boolean,
+        default: false
+    },
     // banners field removed; banners now stored per-list
     private : {
         type: Boolean,
