@@ -333,54 +333,91 @@ const suggestMediaMatches = async (req, res) => {
     }
 };
 
-// GET trending media
+// GET trending: in-app popularity from UserMedia + UniqueMedia. ?type=all = all types; ?type=anime|… = that type only.
+const TRENDING_ALLOWED_TYPES = ['anime', 'manga', 'movie', 'tv', 'game', 'book', 'web-video'];
+
+const trendingProjection = {
+    _id: 0,
+    name: '$media.name',
+    type: '$media.type',
+    media_id: '$media.media_id',
+    source: '$media.source',
+    count: 1,
+    sampleDoc: {
+        _id: '$media._id',
+        name: '$media.name',
+        type: '$media.type',
+        image_url: '$media.image_url',
+        media_id: '$media.media_id',
+        source: '$media.source',
+        score: '$media.score',
+    },
+};
+
 const getTrendingMedia = async (req, res) => {
     try {
-        const cachedResult = trendingCache.get("trendingMedia");
+        const raw = (req.query.type || 'all').toString().toLowerCase().trim();
+        const typeFilter = raw === 'all' || !TRENDING_ALLOWED_TYPES.includes(raw) ? 'all' : raw;
+
+        const cacheKey = typeFilter === 'all' ? 'trendingMedia_all' : `trendingMedia_${typeFilter}`;
+        let cachedResult = trendingCache.get(cacheKey);
         if (cachedResult) {
             return res.status(200).json(cachedResult);
         }
 
-        const result = await UserMedia.aggregate([
-            {
-                $group: {
-                    _id: "$unique_media_ref",
-                    count: { $sum: 1 },
-                },
-            },
-            { $sort: { count: -1 } },
-            { $limit: 15 },
-            {
-                $lookup: {
-                    from: "uniquemedias",
-                    localField: "_id",
-                    foreignField: "_id",
-                    as: "media",
-                },
-            },
-            { $unwind: "$media" },
-            {
-                $project: {
-                    _id: 0,
-                    name: "$media.name",
-                    type: "$media.type",
-                    media_id: "$media.media_id",
-                    source: "$media.source",
-                    count: 1,
-                    sampleDoc: {
-                        _id: "$media._id",
-                        name: "$media.name",
-                        type: "$media.type",
-                        image_url: "$media.image_url",
-                        media_id: "$media.media_id",
-                        source: "$media.source",
-                        score: "$media.score",
-                    },
-                },
-            },
-        ]);
+        if (typeFilter === 'all') {
+            const legacy = trendingCache.get('trendingMedia');
+            if (legacy) {
+                trendingCache.set(cacheKey, legacy);
+                return res.status(200).json(legacy);
+            }
+        }
 
-        trendingCache.set("trendingMedia", result);
+        const pipeline =
+            typeFilter === 'all'
+                ? [
+                      { $group: { _id: '$unique_media_ref', count: { $sum: 1 } } },
+                      { $sort: { count: -1 } },
+                      { $limit: 15 },
+                      {
+                          $lookup: {
+                              from: 'uniquemedias',
+                              localField: '_id',
+                              foreignField: '_id',
+                              as: 'media',
+                          },
+                      },
+                      { $unwind: '$media' },
+                      { $project: trendingProjection },
+                  ]
+                : [
+                      {
+                          $lookup: {
+                              from: 'uniquemedias',
+                              localField: 'unique_media_ref',
+                              foreignField: '_id',
+                              as: 'um',
+                          },
+                      },
+                      { $unwind: '$um' },
+                      { $match: { 'um.type': typeFilter } },
+                      {
+                          $group: {
+                              _id: '$unique_media_ref',
+                              count: { $sum: 1 },
+                              media: { $first: '$um' },
+                          },
+                      },
+                      { $sort: { count: -1 } },
+                      { $limit: 15 },
+                      { $project: trendingProjection },
+                  ];
+
+        const result = await UserMedia.aggregate(pipeline);
+        trendingCache.set(cacheKey, result);
+        if (typeFilter === 'all') {
+            trendingCache.set('trendingMedia', result);
+        }
         return res.status(200).json(result);
     } catch (error) {
         return res.status(500).json({ error: error.message });
