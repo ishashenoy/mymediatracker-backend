@@ -11,6 +11,7 @@ const requireAuth = require('../middleware/requireAuth');
 const { findOrCreateUniqueMedia } = require('../controllers/mediaController');
 const { fireEvent } = require('../controllers/eventsController');
 const { sanitizeText, sanitizeUrl } = require('../utils/sanitize');
+const { isAdminUser, isOwnerOrAdmin, canViewPrivateAccountContent } = require('../utils/privacy');
 
 // Set privacy for a list
 router.put('/:listId/privacy', requireAuth, async (req, res) => {
@@ -122,18 +123,19 @@ const limiter = rateLimit({
   message: "Too many requests. Try again later."
 });
 
-const isAdminUser = (user) => {
-  if (!user) return false;
-  return user.role === 'admin' || user.isAdmin === true || user.is_admin === true;
+const ensureListOwner = async (listId, userId) => {
+  const list = await List.findById(listId);
+  if (!list) return { error: { status: 404, message: 'List not found.' } };
+  if (list.user_id.toString() !== userId.toString()) {
+    return { error: { status: 403, message: 'Not authorized.' } };
+  }
+  return { list };
 };
 
-const isOwnerOrAdmin = (targetUser, requestingUser) => {
-  if (!targetUser || !requestingUser) return false;
-  if (requestingUser._id.toString() === targetUser._id.toString()) return true;
-  return isAdminUser(requestingUser);
-};
-
-const canViewList = (list, requestingUser) => {
+const canViewList = async (list, requestingUser) => {
+  const listOwner = await User.findById(list.user_id).select('_id username private');
+  if (!listOwner) return false;
+  if (!canViewPrivateAccountContent(listOwner, requestingUser)) return false;
   if (list?.private !== true) return true;
   if (!requestingUser) return false;
   if (requestingUser._id.toString() === list.user_id.toString()) return true;
@@ -152,7 +154,7 @@ const getRequestingUser = async (req) => {
 
   try {
     const { _id } = jwt.verify(token, process.env.SECRET);
-    req.requestingUser = await User.findById(_id).select('_id username role isAdmin is_admin');
+    req.requestingUser = await User.findById(_id).select('_id username following role isAdmin is_admin');
   } catch (error) {
     req.requestingUser = null;
   }
@@ -195,6 +197,10 @@ router.get('/user/:username', async (req, res) => {
 
     const requestingUser = await getRequestingUser(req);
     const ownerOrAdmin = isOwnerOrAdmin(user, requestingUser);
+    const canViewPrivateContent = canViewPrivateAccountContent(user, requestingUser);
+    if (!canViewPrivateContent) {
+      return res.status(200).json({ lists: [] });
+    }
 
     // Get all non-archived lists for the user
     const lists = await List.find({
@@ -293,11 +299,9 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
   }
 
   try {
-    // Verify list exists and belongs to user
-    const list = await List.findById(listId);
-    if (!list) return res.status(404).json({ error: 'List not found.' });
-    if (list.user_id.toString() !== user_id.toString()) {
-      return res.status(403).json({ error: 'Not authorized.' });
+    const ownership = await ensureListOwner(listId, user_id);
+    if (ownership.error) {
+      return res.status(ownership.error.status).json({ error: ownership.error.message });
     }
 
     // Find or create UniqueMedia (shared helper also dual-writes to canonical_media)
@@ -370,6 +374,11 @@ router.delete('/:listId/remove-media', requireAuth, async (req, res) => {
   }
 
   try {
+    const ownership = await ensureListOwner(listId, user_id);
+    if (ownership.error) {
+      return res.status(ownership.error.status).json({ error: ownership.error.message });
+    }
+
     // Find UniqueMedia
     const uniqueMedia = await UniqueMedia.findOne({
       source: String(source).trim(),
@@ -527,7 +536,7 @@ router.get('/:listId', async (req, res) => {
     if (!list) return res.status(404).json({ error: 'List not found.' });
 
     const requestingUser = await getRequestingUser(req);
-    if (!canViewList(list, requestingUser)) {
+    if (!(await canViewList(list, requestingUser))) {
       return res.status(403).json({ error: 'This list is private.' });
     }
 
@@ -550,7 +559,7 @@ router.get('/:listId/items', async (req, res) => {
     if (!list) return res.status(404).json({ error: 'List not found.' });
 
     const requestingUser = await getRequestingUser(req);
-    if (!canViewList(list, requestingUser)) {
+    if (!(await canViewList(list, requestingUser))) {
       return res.status(403).json({ error: 'This list is private.' });
     }
 
@@ -586,7 +595,7 @@ router.get('/:listId/full', async (req, res) => {
     if (!list) return res.status(404).json({ error: 'List not found.' });
 
     const requestingUser = await getRequestingUser(req);
-    if (!canViewList(list, requestingUser)) {
+    if (!(await canViewList(list, requestingUser))) {
       return res.status(403).json({ error: 'This list is private.' });
     }
 
@@ -596,10 +605,22 @@ router.get('/:listId/full', async (req, res) => {
         populate: { path: 'unique_media_ref' }
       })
       .sort({ position: 1, createdAt: -1 });
+    const listObject = list.toObject();
+    const listOwner = await User.findById(list.user_id).select('_id username icon is_creator_badge');
+    const owner = listOwner
+      ? {
+          _id: listOwner._id,
+          username: listOwner.username,
+          icon: listOwner.icon || null,
+          is_creator_badge: listOwner.is_creator_badge === true,
+        }
+      : null;
+
     return res.status(200).json({
-      ...list.toObject(),
+      ...listObject,
       items,
-      totalCount: items.length
+      totalCount: items.length,
+      owner,
     });
   } catch (error) {
     return res.status(500).json({ error: error.message });

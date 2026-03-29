@@ -8,6 +8,7 @@ const List = require('../models/listModel');
 const { fireEvent } = require('./eventsController');
 const { createNotification } = require('./notificationController');
 const { sanitizeText, sanitizeUrl, sanitizeIdentifier } = require('../utils/sanitize');
+const { canViewPrivateAccountContent } = require('../utils/privacy');
 
 // ─── Create Post ────────────────────────────────────────────────────────────
 
@@ -604,8 +605,13 @@ const getUserPosts = async (req, res) => {
   const limit = Math.min(parseInt(limitParam, 10) || 20, 50);
 
   try {
-    const profileUser = await User.findOne({ username }).select('_id username');
+    const profileUser = await User.findOne({ username }).select('_id username private followers');
     if (!profileUser) return res.status(404).json({ error: 'User not found.' });
+    const requestingUser = await User.findById(viewerId).select('_id username following role isAdmin is_admin').lean();
+    const canViewPrivateContent = canViewPrivateAccountContent(profileUser, requestingUser);
+    if (!canViewPrivateContent) {
+      return res.status(403).json({ error: 'This account is private.', code: 'PROFILE_PRIVATE' });
+    }
     const profileUserId = profileUser._id;
 
     const dateFilter = cursor ? { $lt: new Date(cursor) } : undefined;

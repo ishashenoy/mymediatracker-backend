@@ -12,6 +12,7 @@ const bcrypt = require('bcrypt');
 const validator = require('validator');
 const { sanitizeText } = require('../utils/sanitize');
 const { createNotification } = require('./notificationController');
+const { isAdminUser, canViewPrivateAccountContent } = require('../utils/privacy');
 
 cloudinary.config({
     cloudinary_url: process.env.CLOUDINARY_URL
@@ -21,11 +22,6 @@ cloudinary.config({
 const createToken = (_id) => {
     return jwt.sign({_id}, process.env.SECRET, { expiresIn: '7d' })
 }
-
-const isAdminUser = (user) => {
-    if (!user) return false;
-    return user.role === 'admin' || user.isAdmin === true || user.is_admin === true;
-};
 
 const toCreatorBadge = (value) => value === true;
 
@@ -151,10 +147,15 @@ const loginUser = async (req, res) => {
 // GET user's connections list
 const getConnections = async (req, res) => {
     const { username } = req.params; // this is the user's username
-    const user = await User.findOne({username: username});
+    const user = await User.findOne({ username: username });
 
     //Checking if the username exists
     if (!user) return res.status(404).json({error: 'User does not exist.'});
+    const requestingUser = await User.findById(req.user._id).select('_id username following role isAdmin is_admin').lean();
+    const canViewConnections = canViewPrivateAccountContent(user, requestingUser);
+    if (!canViewConnections) {
+        return res.status(403).json({ error: 'This account is private.', code: 'PROFILE_PRIVATE' });
+    }
 
     const userFollowers = Array.isArray(user.followers) ? user.followers : [];
     const userFollowing = Array.isArray(user.following) ? user.following : [];
@@ -361,6 +362,9 @@ const followRequest = async (req, res) => {
         // Check if receiver exists first
         const receivingUser = await User.findOne({ username: username });
         if (!receivingUser) return res.status(404).json({error: 'User does not exist.'});
+        if (receivingUser.private === true) {
+            return res.status(403).json({ error: 'Cannot follow private accounts right now.' });
+        }
 
         // Checking if already following (duplicate prevention)
         if (receivingUser.followers && receivingUser.followers.includes(senderUsername)) {
@@ -590,6 +594,7 @@ const getUserProfile = async (req, res) => {
         const requestingUser = await getRequestingUserFromToken(req);
         const isOwnerOrAdmin = (requestingUser && requestingUser._id.toString() === user._id.toString())
             || isAdminUser(requestingUser);
+        const canViewPrivateContent = canViewPrivateAccountContent(user, requestingUser);
 
         // Get user's lists
         const List = require('../models/listModel');
@@ -604,8 +609,9 @@ const getUserProfile = async (req, res) => {
             ...(isOwnerOrAdmin ? {} : { private: { $ne: true } }),
         };
 
-        const userLists = await List.find(userListsQuery)
-            .sort({ position: 1, created_at: -1 });
+        const userLists = canViewPrivateContent
+            ? await List.find(userListsQuery).sort({ position: 1, created_at: -1 })
+            : [];
 
         // Get user's connections (followers/following count)
         const followersCount = user.followers ? user.followers.length : 0;
@@ -692,12 +698,14 @@ const getUserProfile = async (req, res) => {
             connections: detailedConnections,
             lists: listDetails,
             stats: {
-                total_lists: userLists.length,
-                total_non_archived_lists: totalNonArchivedLists,
-                total_media: listDetails.reduce((sum, list) => sum + list.media_count, 0)
+                total_lists: canViewPrivateContent ? userLists.length : 0,
+                total_non_archived_lists: canViewPrivateContent ? totalNonArchivedLists : 0,
+                total_media: canViewPrivateContent ? listDetails.reduce((sum, list) => sum + list.media_count, 0) : 0
             },
             permissions: {
-                can_view_lists: true
+                can_view_lists: canViewPrivateContent,
+                can_view_posts: canViewPrivateContent,
+                profile_locked: !canViewPrivateContent,
             }
         };
 
