@@ -28,9 +28,16 @@ const postSchema = new mongoose.Schema({
   },
   body: {
     type: String,
-    required: true,
+    default: '',
     maxlength: 2000,
     trim: true,
+  },
+
+  /** User-uploaded inline images (Cloudinary URLs), max 4 — TikTok-style attachments */
+  embedded_images: {
+    type: [String],
+    default: [],
+    validate: [(v) => v.length <= 4, 'Max 4 images'],
   },
 
   // ─── Attachments ─────────────────────────────────────────────────────────────

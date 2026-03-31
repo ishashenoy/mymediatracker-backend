@@ -9,14 +9,52 @@ const { fireEvent } = require('./eventsController');
 const { createNotification } = require('./notificationController');
 const { sanitizeText, sanitizeUrl, sanitizeIdentifier } = require('../utils/sanitize');
 const { canViewPrivateAccountContent } = require('../utils/privacy');
+const {
+  MAX_EMBEDDED_IMAGES,
+  uploadPostImageBuffer,
+  isTrustedImageUrl,
+} = require('../utils/postImageUpload');
+
+function normalizeEmbeddedImages(raw) {
+  if (!raw) return [];
+  const arr = Array.isArray(raw) ? raw : [];
+  const out = [];
+  for (const item of arr) {
+    if (out.length >= MAX_EMBEDDED_IMAGES) break;
+    const u = sanitizeUrl(item);
+    if (!u || !isTrustedImageUrl(u)) continue;
+    out.push(u);
+  }
+  return out;
+}
+
+const uploadPostImage = async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'Image file is required.' });
+  }
+  if (!req.file.mimetype || !req.file.mimetype.startsWith('image/')) {
+    return res.status(400).json({ error: 'Only image files are allowed.' });
+  }
+  try {
+    const userId = req.user?._id;
+    if (!userId) {
+      return res.status(401).json({ error: 'Not authorized' });
+    }
+    const result = await uploadPostImageBuffer(req.file.buffer, userId);
+    return res.status(200).json({ image_url: result.secure_url });
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to upload image.' });
+  }
+};
 
 // ─── Create Post ────────────────────────────────────────────────────────────
 
 const createPost = async (req, res) => {
-  const { body, linked_media, linked_medias, poll, linked_list_id, tag, session_id } = req.body;
+  const { body, linked_media, linked_medias, poll, linked_list_id, tag, session_id, embedded_images } = req.body;
   const userId = req.user._id;
 
   const safeBody = sanitizeText(body, { maxLen: 2000, allowNewlines: true });
+  const safeEmbedded = normalizeEmbeddedImages(embedded_images);
   const safeSessionId = session_id ? sanitizeIdentifier(session_id, { maxLen: 80 }) : null;
 
   const VALID_TAGS = ['review', 'question', 'recommendation', 'discussion', 'rant'];
@@ -24,8 +62,8 @@ const createPost = async (req, res) => {
     return res.status(400).json({ error: 'Invalid tag.' });
   }
 
-  if (!safeBody || safeBody.length === 0) {
-    return res.status(400).json({ error: 'Post body is required.' });
+  if ((!safeBody || safeBody.length === 0) && safeEmbedded.length === 0) {
+    return res.status(400).json({ error: 'Write something or add at least one image.' });
   }
   // length already capped by sanitizer (defense-in-depth)
 
@@ -61,6 +99,10 @@ const createPost = async (req, res) => {
       body: safeBody,
       tag: (tag && VALID_TAGS.includes(tag)) ? tag : null,
     };
+
+    if (safeEmbedded.length > 0) {
+      postData.embedded_images = safeEmbedded;
+    }
 
     if (linked_media && linked_media.name && linked_media.type) {
       postData.linked_media = {
@@ -113,6 +155,7 @@ const createPost = async (req, res) => {
     fireEvent(userId, 'post_create', null, {
       body_length: post.body.length,
       has_media: !!(postData.linked_media || postData.linked_medias?.length),
+      has_embedded_images: (postData.embedded_images?.length || 0) > 0,
       has_poll: !!postData.poll,
       has_list: !!postData.linked_list_id,
       session_id: safeSessionId,
@@ -402,14 +445,15 @@ const votePoll = async (req, res) => {
 
 const addComment = async (req, res) => {
   const { postId } = req.params;
-  const { body, session_id } = req.body;
+  const { body, session_id, images } = req.body;
   const userId = req.user._id;
 
   const safeBody = sanitizeText(body, { maxLen: 500, allowNewlines: true });
+  const safeImages = normalizeEmbeddedImages(images);
   const safeSessionId = session_id ? sanitizeIdentifier(session_id, { maxLen: 80 }) : null;
 
-  if (!safeBody || safeBody.length === 0) {
-    return res.status(400).json({ error: 'Comment body is required.' });
+  if ((!safeBody || safeBody.length === 0) && safeImages.length === 0) {
+    return res.status(400).json({ error: 'Write a reply or add at least one image.' });
   }
   // length already capped by sanitizer (defense-in-depth)
 
@@ -421,6 +465,7 @@ const addComment = async (req, res) => {
       post_id: postId,
       author_id: userId,
       body: safeBody,
+      ...(safeImages.length > 0 ? { images: safeImages } : {}),
     });
 
     await Post.findByIdAndUpdate(postId, { $inc: { comment_count: 1 } });
@@ -443,6 +488,7 @@ const addComment = async (req, res) => {
       comment: {
         _id: comment._id,
         body: comment.body,
+        images: comment.images || [],
         created_at: comment.created_at,
         author: comment.author_id,
         like_count: 0,
@@ -487,6 +533,7 @@ const getComments = async (req, res) => {
     const shaped = comments.map(c => ({
       _id: c._id,
       body: c.body,
+      images: c.images || [],
       created_at: c.created_at,
       author: c.author_id,
       like_count: c.like_count || 0,
@@ -581,6 +628,7 @@ const getBookmarkedComments = async (req, res) => {
     const shaped = ordered.map(c => ({
       _id: c._id,
       body: c.body,
+      images: c.images || [],
       created_at: c.created_at,
       author: c.author_id,
       post: postMap.get(c.post_id.toString()) || { _id: c.post_id },
@@ -838,6 +886,7 @@ function shapePost(post, viewerInteractions, linkedList) {
   return {
     _id: obj._id,
     body: obj.body,
+    embedded_images: obj.embedded_images?.length ? obj.embedded_images : [],
     tag: obj.tag || null,
     linked_media: obj.linked_media || null,
     linked_medias: obj.linked_medias?.length ? obj.linked_medias : [],
@@ -856,6 +905,7 @@ function shapePost(post, viewerInteractions, linkedList) {
 }
 
 module.exports = {
+  uploadPostImage,
   createPost,
   deletePost,
   getFeedPosts,

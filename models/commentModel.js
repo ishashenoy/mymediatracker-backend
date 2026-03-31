@@ -14,9 +14,15 @@ const commentSchema = new mongoose.Schema({
   },
   body: {
     type: String,
-    required: true,
+    default: '',
     maxlength: 500,
     trim: true,
+  },
+  /** Inline images on replies (Cloudinary URLs), max 4 */
+  images: {
+    type: [String],
+    default: [],
+    validate: [(v) => v.length <= 4, 'Max 4 images'],
   },
   like_count: { type: Number, default: 0, min: 0 },
   repost_count: { type: Number, default: 0, min: 0 },

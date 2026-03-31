@@ -1,7 +1,9 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+const multer = require('multer');
 const requireAuth = require('../middleware/requireAuth');
 const {
+  uploadPostImage,
   createPost,
   deletePost,
   getFeedPosts,
@@ -25,6 +27,17 @@ const {
 
 const router = express.Router();
 
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!file?.mimetype?.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed'));
+    }
+    return cb(null, true);
+  },
+});
+
 const postsLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   max: 200,
@@ -43,6 +56,7 @@ router.get('/bookmarks/comments', getBookmarkedComments);
 router.get('/user/:username',    getUserPosts);
 router.get('/by-media',          getPostsByMedia);
 router.get('/by-list/:listId',   getPostsByList);
+router.post('/upload-image',    upload.single('image'), uploadPostImage);
 router.post('/',                 createPost);
 
 router.post('/:postId/like',        toggleLike);
