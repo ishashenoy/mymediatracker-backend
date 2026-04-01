@@ -232,13 +232,28 @@ const getPostsByMedia = async (req, res) => {
   const userId = req.user._id;
   const limit = Math.min(parseInt(limitParam, 10) || 20, 50);
 
-  if (!source || !media_id) {
+  if (!source || media_id === undefined || media_id === null || String(media_id).trim() === '') {
+    return res.status(400).json({ error: 'source and media_id are required.' });
+  }
+
+  const safeSource = sanitizeIdentifier(String(source), { maxLen: 40 });
+  const safeMediaId = sanitizeIdentifier(String(media_id), { maxLen: 120 });
+  if (!safeSource || !safeMediaId) {
     return res.status(400).json({ error: 'source and media_id are required.' });
   }
 
   try {
-    const query = { 'linked_media.source': source, 'linked_media.media_id': String(media_id) };
-    if (cursor) query.created_at = { $lt: new Date(cursor) };
+    // Match singular linked_media (e.g. discussion posts from the detail page) or any entry in
+    // linked_medias (e.g. review-tagged posts from the feed composer).
+    const mediaMatch = {
+      $or: [
+        { 'linked_media.source': safeSource, 'linked_media.media_id': safeMediaId },
+        { linked_medias: { $elemMatch: { source: safeSource, media_id: safeMediaId } } },
+      ],
+    };
+    const query = cursor
+      ? { $and: [mediaMatch, { created_at: { $lt: new Date(cursor) } }] }
+      : mediaMatch;
 
     const rawPosts = await Post.find(query)
       .populate('author_id', 'username icon is_creator_badge')
