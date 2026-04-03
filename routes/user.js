@@ -25,7 +25,7 @@ const passResetLimiter = rateLimit({
 });
 
 //controller functions
-const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, getConnections, getIcon, getUserProfile, searchUsers, sendPasswordResetEmail, resetPassword, updateOnboarding, updateBio} = require('../controllers/userController');
+const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, getConnections, getIcon, getUserProfile, getMediaActivityHeatmap, searchUsers, sendPasswordResetEmail, resetPassword, updateOnboarding, updateBio} = require('../controllers/userController');
 const { getUserPosts } = require('../controllers/postController');
 
 const router = express.Router();
@@ -61,6 +61,9 @@ router.get('/:username/connections', limiter, requireAuth, getConnections);
 
 // get user profile (public view, but enhanced data for authenticated users)
 router.get('/:username/profile', limiter, getUserProfile);
+
+// media library activity heat map (follows same visibility as profile lists)
+router.get('/:username/media-activity', limiter, getMediaActivityHeatmap);
 
 // get user posts + reposts
 router.get('/:username/posts', limiter, requireAuth, getUserPosts);

@@ -7,6 +7,7 @@ const {
   createPost,
   deletePost,
   getFeedPosts,
+  getPostById,
   getPostsByMedia,
   getPostsByList,
   toggleLike,
@@ -65,6 +66,7 @@ router.post('/:postId/bookmark',    toggleBookmark);
 router.post('/:postId/poll/vote',   votePoll);
 router.post('/:postId/comments',    addComment);
 router.get('/:postId/comments',     getComments);
+router.get('/:postId',              getPostById);
 router.delete('/:postId',           deletePost);
 
 router.post('/:postId/comments/:commentId/like',     toggleCommentLike);

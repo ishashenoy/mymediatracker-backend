@@ -5,11 +5,7 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js",
-    "migrate:createdat": "node scripts/backfillCreatedAt.js",
-    "migrate:follows": "node scripts/migrateFollows.js",
-    "migrate:uniquemedia": "node scripts/migrateUniquemedia.js",
-    "migrate:uniquemedia:dry": "node scripts/migrateUniquemedia.js --dry-run"
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",

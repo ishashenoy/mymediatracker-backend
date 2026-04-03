@@ -480,10 +480,15 @@ const sendPasswordResetEmail = async (req, res) => {
         return res.status(400).json({ error: 'reCAPTCHA verification failed. Please refresh the page and try again.' });
     }
 
+    const genericResetResponse = {
+        message:
+            'If an account exists for that email, you will receive password reset instructions shortly.',
+    };
+
     try {
         const user = await User.findOne({ email });
         if (!user) {
-            return res.status(404).json({ error: 'No account found with that email.' });
+            return res.status(200).json(genericResetResponse);
         }
 
         // Create a short-lived token (expires in 15 minutes)
@@ -528,7 +533,7 @@ const sendPasswordResetEmail = async (req, res) => {
                 ]
             });
 
-        return res.status(200).json({ message: 'Password reset email sent.' });
+        return res.status(200).json(genericResetResponse);
 
     } catch (error) {
         return res.status(500).json({ error: 'Failed to send password reset email.' });
@@ -601,6 +606,12 @@ const getUserProfile = async (req, res) => {
         const totalNonArchivedLists = await List.countDocuments({
             user_id: user._id,
             archived: false,
+        });
+
+        const publicListsCount = await List.countDocuments({
+            user_id: user._id,
+            archived: false,
+            private: { $ne: true },
         });
 
         const userListsQuery = {
@@ -700,7 +711,8 @@ const getUserProfile = async (req, res) => {
             stats: {
                 total_lists: canViewPrivateContent ? userLists.length : 0,
                 total_non_archived_lists: canViewPrivateContent ? totalNonArchivedLists : 0,
-                total_media: canViewPrivateContent ? listDetails.reduce((sum, list) => sum + list.media_count, 0) : 0
+                total_media: canViewPrivateContent ? listDetails.reduce((sum, list) => sum + list.media_count, 0) : 0,
+                public_lists_count: canViewPrivateContent ? publicListsCount : 0,
             },
             permissions: {
                 can_view_lists: canViewPrivateContent,
@@ -744,6 +756,154 @@ const updateOnboarding = async (req, res) => {
     }
 };
 
+function sanitizeIanaTimeZone(tz) {
+    const s = String(tz || '').trim();
+    if (!s || s.length > 80) return 'UTC';
+    if (!/^[A-Za-z0-9/_+\-.]+$/.test(s)) return 'UTC';
+    return s;
+}
+
+// GET /api/user/:username/media-activity — daily counts for library heat map (optional auth)
+const getMediaActivityHeatmap = async (req, res) => {
+    const { username } = req.params;
+    const mode = String(req.query.mode || 'added').toLowerCase() === 'done' ? 'done' : 'added';
+    const yearRaw = parseInt(req.query.year, 10);
+    const year = Number.isFinite(yearRaw) ? yearRaw : new Date().getFullYear();
+    if (year < 1970 || year > 2100) {
+        return res.status(400).json({ error: 'Invalid year' });
+    }
+    const tz = sanitizeIanaTimeZone(req.query.tz);
+
+    try {
+        const profileUser = await User.findOne({ username }).select('_id username private');
+        if (!profileUser) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const requestingUser = await getRequestingUserFromToken(req);
+        if (!canViewPrivateAccountContent(profileUser, requestingUser)) {
+            return res.status(403).json({ error: 'This account is private.', code: 'PROFILE_PRIVATE' });
+        }
+
+        const UserMedia = require('../models/userMediaModel');
+        const MS_DAY = 86400000;
+        const start = new Date(Date.UTC(year, 0, 1) - 2 * MS_DAY);
+        const end = new Date(Date.UTC(year + 1, 0, 1) + 2 * MS_DAY);
+
+        let pipeline;
+        if (mode === 'added') {
+            pipeline = [
+                {
+                    $match: {
+                        user_id: profileUser._id,
+                        createdAt: { $gte: start, $lt: end },
+                    },
+                },
+                {
+                    $group: {
+                        _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: tz } },
+                        count: { $sum: 1 },
+                    },
+                },
+            ];
+        } else {
+            pipeline = [
+                {
+                    $match: {
+                        user_id: profileUser._id,
+                        status: 'done',
+                    },
+                },
+                {
+                    $addFields: {
+                        activityAt: { $ifNull: ['$finished_at', '$updatedAt'] },
+                    },
+                },
+                {
+                    $match: {
+                        activityAt: { $gte: start, $lt: end },
+                    },
+                },
+                {
+                    $group: {
+                        _id: { $dateToString: { format: '%Y-%m-%d', date: '$activityAt', timezone: tz } },
+                        count: { $sum: 1 },
+                    },
+                },
+            ];
+        }
+
+        const byDay = await UserMedia.aggregate(pipeline);
+
+        const days = {};
+        let total = 0;
+        const yearStr = String(year);
+        for (const row of byDay) {
+            if (!row._id || !row._id.startsWith(yearStr)) continue;
+            days[row._id] = row.count;
+            total += row.count;
+        }
+
+        let yearBoundsAgg;
+        if (mode === 'added') {
+            yearBoundsAgg = await UserMedia.aggregate([
+                { $match: { user_id: profileUser._id } },
+                {
+                    $group: {
+                        _id: null,
+                        minDate: { $min: '$createdAt' },
+                        maxDate: { $max: '$createdAt' },
+                    },
+                },
+            ]);
+        } else {
+            yearBoundsAgg = await UserMedia.aggregate([
+                { $match: { user_id: profileUser._id, status: 'done' } },
+                {
+                    $addFields: {
+                        activityAt: { $ifNull: ['$finished_at', '$updatedAt'] },
+                    },
+                },
+                {
+                    $match: { activityAt: { $type: 'date' } },
+                },
+                {
+                    $group: {
+                        _id: null,
+                        minDate: { $min: '$activityAt' },
+                        maxDate: { $max: '$activityAt' },
+                    },
+                },
+            ]);
+        }
+
+        const bounds = yearBoundsAgg[0];
+        const currentYear = new Date().getFullYear();
+        let availableYears = [currentYear];
+        if (bounds?.minDate && bounds?.maxDate) {
+            const yMin = bounds.minDate.getFullYear();
+            const yMax = bounds.maxDate.getFullYear();
+            availableYears = [];
+            for (let y = yMin; y <= yMax; y++) availableYears.push(y);
+            if (!availableYears.includes(currentYear)) {
+                availableYears.push(currentYear);
+                availableYears.sort((a, b) => a - b);
+            }
+        }
+
+        return res.status(200).json({
+            year,
+            mode,
+            days,
+            total,
+            available_years: availableYears,
+            timezone: tz,
+        });
+    } catch (error) {
+        return res.status(500).json({ error: 'Failed to load media activity' });
+    }
+};
+
 const updateBio = async (req, res) => {
     const { username } = req.params;
     const senderId = req.user._id;
@@ -779,4 +939,5 @@ module.exports = {
     resetPassword,
     updateOnboarding,
     updateBio,
+    getMediaActivityHeatmap,
 }

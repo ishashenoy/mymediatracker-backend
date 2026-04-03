@@ -225,6 +225,25 @@ const getFeedPosts = async (req, res) => {
   }
 };
 
+// ─── Get Single Post ─────────────────────────────────────────────────────────
+
+const getPostById = async (req, res) => {
+  const { postId } = req.params;
+  const userId = req.user._id;
+
+  try {
+    const raw = await Post.findById(postId)
+      .populate('author_id', 'username icon is_creator_badge')
+      .lean();
+    if (!raw) return res.status(404).json({ error: 'Post not found.' });
+
+    const [post] = await hydratePosts([raw], userId);
+    return res.status(200).json({ post });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
 // ─── Get Posts by Linked Media ───────────────────────────────────────────────
 
 const getPostsByMedia = async (req, res) => {
@@ -924,6 +943,7 @@ module.exports = {
   createPost,
   deletePost,
   getFeedPosts,
+  getPostById,
   getPostsByMedia,
   getPostsByList,
   toggleLike,
