@@ -197,6 +197,9 @@ router.get('/user/:username', async (req, res) => {
 
     const requestingUser = await getRequestingUser(req);
     const ownerOrAdmin = isOwnerOrAdmin(user, requestingUser);
+    if (user.account_deletion_requested_at && !ownerOrAdmin) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
     const canViewPrivateContent = canViewPrivateAccountContent(user, requestingUser);
     if (!canViewPrivateContent) {
       return res.status(200).json({ lists: [] });

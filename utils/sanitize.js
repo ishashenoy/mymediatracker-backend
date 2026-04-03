@@ -40,6 +40,20 @@ function sanitizeText(input, { maxLen = 500, allowNewlines = true } = {}) {
   return trimmed;
 }
 
+const ZERO_WIDTH_AND_BOM = /[\u200B-\u200D\uFEFF\u00AD]/g;
+
+/**
+ * Plain-text body for feedback / suggestion storage (DB + optional webhooks).
+ * Strips HTML, control chars, zero-width/BOM, collapses whitespace; hard-caps length.
+ */
+function sanitizeFeedbackMessage(input, { maxLen = 4000 } = {}) {
+  if (typeof input !== 'string') {
+    return '';
+  }
+  const withoutInvisible = input.replace(ZERO_WIDTH_AND_BOM, '');
+  return sanitizeText(withoutInvisible, { maxLen, allowNewlines: true });
+}
+
 /**
  * Sanitize "identifier-like" strings (usernames, ids, slugs).
  * Keeps only a conservative charset.
@@ -64,6 +78,7 @@ function sanitizeUrl(input, { maxLen = 2048 } = {}) {
 
 module.exports = {
   sanitizeText,
+  sanitizeFeedbackMessage,
   sanitizeIdentifier,
   sanitizeUrl,
 };

@@ -65,6 +65,10 @@ mongoose.connect(process.env.MONGO_URI)
     require('./models/postInteractionModel');
     require('./models/commentModel');
     require('./models/notificationModel');
+    require('./models/feedbackModel');
+
+    const { startAccountPurgeScheduler } = require('./jobs/purgeScheduledAccounts');
+    startAccountPurgeScheduler();
 
     // listen for requests
     app.listen(process.env.PORT || 3001, () => {

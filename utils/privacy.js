@@ -11,6 +11,10 @@ const isOwnerOrAdmin = (targetUser, requestingUser) => {
 
 const canViewPrivateAccountContent = (targetUser, requestingUser) => {
   if (!targetUser) return false;
+  // Pending account deletion: only the account owner (or admin) may see library / posts / lists.
+  if (targetUser.account_deletion_requested_at) {
+    return isOwnerOrAdmin(targetUser, requestingUser);
+  }
   if (targetUser.private !== true) return true;
   if (!requestingUser) return false;
   if (isOwnerOrAdmin(targetUser, requestingUser)) return true;

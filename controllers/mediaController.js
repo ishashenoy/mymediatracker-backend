@@ -11,6 +11,7 @@ const User = require("../models/userModel");
 const { createFeedActivity, checkMilestones } = require("../controllers/feedController");
 const { fireEvent } = require("../controllers/eventsController");
 const { sanitizeText, sanitizeUrl } = require("../utils/sanitize");
+const { normalizeStarRatingInput, ratingForApiResponse } = require("../utils/starRating");
 
 const trendingCache = new NodeCache({ stdTTL: 86400 });
 
@@ -65,7 +66,7 @@ function serializeUserMedia(doc) {
         unique_media_ref: media._id || doc.unique_media_ref,
         canonical_id: doc.canonical_id || null,
 
-        rating: doc.rating,
+        rating: ratingForApiResponse(doc.rating),
         status: doc.status,
         progress: doc.progress,
         fav: doc.fav,
@@ -272,6 +273,7 @@ const getProfileMedia = async (req, res) => {
 
         const user_id = user._id;
         const privacy = user.private;
+        const pendingDeletion = Boolean(user.account_deletion_requested_at);
 
         const fetchProfileMedia = async () => {
             const entries = await UserMedia.find({ user_id })
@@ -284,11 +286,35 @@ const getProfileMedia = async (req, res) => {
             });
         };
 
-        if (!privacy) {
+        const { authorization } = req.headers;
+
+        const resolveViewer = async () => {
+            if (!authorization) return null;
+            try {
+                const jwt = require("jsonwebtoken");
+                const token = authorization.split(" ")[1];
+                const { _id } = jwt.verify(token, process.env.SECRET);
+                return User.findById(_id).select("username role isAdmin is_admin");
+            } catch {
+                return null;
+            }
+        };
+
+        if (pendingDeletion) {
+            const viewer = await resolveViewer();
+            const isOwner = viewer && viewer.username === username;
+            const admin =
+                viewer &&
+                (viewer.role === "admin" || viewer.isAdmin === true || viewer.is_admin === true);
+            if (!isOwner && !admin) {
+                return res.status(404).json({ error: "User not found" });
+            }
             return await fetchProfileMedia();
         }
 
-        const { authorization } = req.headers;
+        if (!privacy) {
+            return await fetchProfileMedia();
+        }
 
         if (authorization) {
             try {
@@ -354,6 +380,27 @@ const trendingProjection = {
     },
 };
 
+/** Exclude library rows from users in the account-deletion grace window from trending. */
+const trendingExcludePendingDeletion = [
+    {
+        $lookup: {
+            from: 'users',
+            localField: 'user_id',
+            foreignField: '_id',
+            as: '_acct',
+        },
+    },
+    { $unwind: { path: '$_acct', preserveNullAndEmptyArrays: false } },
+    {
+        $match: {
+            $or: [
+                { '_acct.account_deletion_requested_at': null },
+                { '_acct.account_deletion_requested_at': { $exists: false } },
+            ],
+        },
+    },
+];
+
 const getTrendingMedia = async (req, res) => {
     try {
         const raw = (req.query.type || 'all').toString().toLowerCase().trim();
@@ -376,6 +423,7 @@ const getTrendingMedia = async (req, res) => {
         const pipeline =
             typeFilter === 'all'
                 ? [
+                      ...trendingExcludePendingDeletion,
                       { $group: { _id: '$unique_media_ref', count: { $sum: 1 } } },
                       { $sort: { count: -1 } },
                       { $limit: 15 },
@@ -391,6 +439,7 @@ const getTrendingMedia = async (req, res) => {
                       { $project: trendingProjection },
                   ]
                 : [
+                      ...trendingExcludePendingDeletion,
                       {
                           $lookup: {
                               from: 'uniquemedias',
@@ -470,6 +519,18 @@ const createMedia = async (req, res) => {
         return res.status(400).json({ error: "Name and type are required." });
     }
 
+    let ratingToStore = null;
+    if (rating !== undefined) {
+        try {
+            const r = normalizeStarRatingInput(rating);
+            if (!r.skip) {
+                ratingToStore = r.value;
+            }
+        } catch (err) {
+            return res.status(400).json({ error: err.message });
+        }
+    }
+
     try {
         const user_id = req.user._id;
 
@@ -522,7 +583,7 @@ const createMedia = async (req, res) => {
             user_id,
             unique_media_ref: uniqueMedia._id,
             progress: safeProgress,
-            rating,
+            rating: ratingToStore,
             status,
             fav: Boolean(fav),
 
@@ -576,7 +637,7 @@ const createMedia = async (req, res) => {
         setImmediate(() => fireEvent(user_id, "log_media", populated.canonical_id || null, {
             unique_media_id: String(uniqueMedia._id),
             status: status || "",
-            rating: rating ?? null,
+            rating: ratingToStore,
         }));
 
         const serialized = serializeUserMedia(populated);
@@ -706,7 +767,16 @@ const updateMedia = async (req, res) => {
         const incoming = req.body || {};
         const updates = {};
 
-        if (incoming.rating !== undefined) updates.rating = String(incoming.rating);
+        if (incoming.rating !== undefined) {
+            try {
+                const r = normalizeStarRatingInput(incoming.rating);
+                if (!r.skip) {
+                    updates.rating = r.value;
+                }
+            } catch (err) {
+                return res.status(400).json({ error: err.message });
+            }
+        }
         if (incoming.status !== undefined) updates.status = incoming.status;
         if (incoming.fav !== undefined) updates.fav = Boolean(incoming.fav);
 
@@ -860,7 +930,20 @@ const importMedia = async (req, res) => {
                 name = unwrap(item.title);
                 image_url = unwrap(item.book_large_image_url);
                 progress = "";
-                rating = String(item.user_rating || "0");
+                {
+                    const rawGr = item.user_rating;
+                    rating = null;
+                    if (rawGr != null && rawGr !== '' && String(rawGr) !== '0') {
+                        try {
+                            const r = normalizeStarRatingInput(Number(rawGr));
+                            if (!r.skip) {
+                                rating = r.value;
+                            }
+                        } catch {
+                            rating = null;
+                        }
+                    }
+                }
                 type = "book";
                 mediaSource = "goodreads";
 

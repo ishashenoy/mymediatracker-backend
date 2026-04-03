@@ -8,7 +8,7 @@ const List = require('../models/listModel');
 const { fireEvent } = require('./eventsController');
 const { createNotification } = require('./notificationController');
 const { sanitizeText, sanitizeUrl, sanitizeIdentifier } = require('../utils/sanitize');
-const { canViewPrivateAccountContent } = require('../utils/privacy');
+const { canViewPrivateAccountContent, isOwnerOrAdmin } = require('../utils/privacy');
 const {
   MAX_EMBEDDED_IMAGES,
   uploadPostImageBuffer,
@@ -687,9 +687,12 @@ const getUserPosts = async (req, res) => {
   const limit = Math.min(parseInt(limitParam, 10) || 20, 50);
 
   try {
-    const profileUser = await User.findOne({ username }).select('_id username private followers');
+    const profileUser = await User.findOne({ username }).select('_id username private followers account_deletion_requested_at');
     if (!profileUser) return res.status(404).json({ error: 'User not found.' });
     const requestingUser = await User.findById(viewerId).select('_id username following role isAdmin is_admin').lean();
+    if (profileUser.account_deletion_requested_at && !isOwnerOrAdmin(profileUser, requestingUser)) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
     const canViewPrivateContent = canViewPrivateAccountContent(profileUser, requestingUser);
     if (!canViewPrivateContent) {
       return res.status(403).json({ error: 'This account is private.', code: 'PROFILE_PRIVATE' });
@@ -763,6 +766,10 @@ const getSuggestions = async (req, res) => {
           _id: { $ne: userId },
           username: { $nin: followingUsernames },
           private: { $ne: true },
+          $or: [
+            { account_deletion_requested_at: null },
+            { account_deletion_requested_at: { $exists: false } },
+          ],
         },
       },
       { $addFields: { follower_count: { $size: { $ifNull: ['$followers', []] } } } },

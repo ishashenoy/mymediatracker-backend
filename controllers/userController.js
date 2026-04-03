@@ -10,9 +10,12 @@ const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const bcrypt = require('bcrypt');
 const validator = require('validator');
-const { sanitizeText } = require('../utils/sanitize');
+const { sanitizeText, sanitizeFeedbackMessage } = require('../utils/sanitize');
+const { ratingForApiResponse } = require('../utils/starRating');
+const Feedback = require('../models/feedbackModel');
 const { createNotification } = require('./notificationController');
-const { isAdminUser, canViewPrivateAccountContent } = require('../utils/privacy');
+const { isAdminUser, isOwnerOrAdmin, canViewPrivateAccountContent } = require('../utils/privacy');
+const { scheduledPurgeAtFromNow, GRACE_DAYS, isAccountPendingDeletion } = require('../utils/accountDeletion');
 
 cloudinary.config({
     cloudinary_url: process.env.CLOUDINARY_URL
@@ -138,6 +141,10 @@ const loginUser = async (req, res) => {
       token,
       icon: user.icon || null,
       is_creator_badge: toCreatorBadge(user.is_creator_badge),
+      accountPendingDeletion: isAccountPendingDeletion(user),
+      accountScheduledPurgeAt: user.account_scheduled_purge_at
+        ? user.account_scheduled_purge_at.toISOString()
+        : null,
     });
   } catch (err) {
     return res.status(400).json({ error: err.message });
@@ -152,6 +159,9 @@ const getConnections = async (req, res) => {
     //Checking if the username exists
     if (!user) return res.status(404).json({error: 'User does not exist.'});
     const requestingUser = await User.findById(req.user._id).select('_id username following role isAdmin is_admin').lean();
+    if (user.account_deletion_requested_at && !isOwnerOrAdmin(user, requestingUser)) {
+        return res.status(404).json({error: 'User does not exist.'});
+    }
     const canViewConnections = canViewPrivateAccountContent(user, requestingUser);
     if (!canViewConnections) {
         return res.status(403).json({ error: 'This account is private.', code: 'PROFILE_PRIVATE' });
@@ -196,6 +206,13 @@ const getIcon = async (req, res) => {
 
     //Checking if the username exists
     if (!user) return res.status(404).json({error: 'User does not exist.'});
+
+    if (user.account_deletion_requested_at) {
+        const requestingUser = await getRequestingUserFromToken(req);
+        if (!isOwnerOrAdmin(user, requestingUser)) {
+            return res.status(404).json({error: 'User does not exist.'});
+        }
+    }
 
     const userIcon = user.icon;
     if (!userIcon){
@@ -325,7 +342,13 @@ const searchUsers = async (req, res) => {
 
     try {
         // Search by username or email (partial, case-insensitive)
-        const users = await User.find({ username: { $regex: query, $options: 'i' }})
+        const users = await User.find({
+            username: { $regex: query, $options: 'i' },
+            $or: [
+                { account_deletion_requested_at: null },
+                { account_deletion_requested_at: { $exists: false } },
+            ],
+        })
         .select('username icon private is_creator_badge')
         .limit(20);
 
@@ -362,6 +385,9 @@ const followRequest = async (req, res) => {
         // Check if receiver exists first
         const receivingUser = await User.findOne({ username: username });
         if (!receivingUser) return res.status(404).json({error: 'User does not exist.'});
+        if (receivingUser.account_deletion_requested_at) {
+            return res.status(404).json({error: 'User does not exist.'});
+        }
         if (receivingUser.private === true) {
             return res.status(403).json({ error: 'Cannot follow private accounts right now.' });
         }
@@ -597,8 +623,11 @@ const getUserProfile = async (req, res) => {
         }
 
         const requestingUser = await getRequestingUserFromToken(req);
-        const isOwnerOrAdmin = (requestingUser && requestingUser._id.toString() === user._id.toString())
+        const isOwnerOrAdminProfile = (requestingUser && requestingUser._id.toString() === user._id.toString())
             || isAdminUser(requestingUser);
+        if (user.account_deletion_requested_at && !isOwnerOrAdminProfile) {
+            return res.status(404).json({ error: 'User not found' });
+        }
         const canViewPrivateContent = canViewPrivateAccountContent(user, requestingUser);
 
         // Get user's lists
@@ -617,7 +646,7 @@ const getUserProfile = async (req, res) => {
         const userListsQuery = {
             user_id: user._id,
             archived: false,
-            ...(isOwnerOrAdmin ? {} : { private: { $ne: true } }),
+            ...(isOwnerOrAdminProfile ? {} : { private: { $ne: true } }),
         };
 
         const userLists = canViewPrivateContent
@@ -656,7 +685,7 @@ const getUserProfile = async (req, res) => {
             return {
                 _id: media._id,
                 status: media.status,
-                rating: media.rating,
+                rating: ratingForApiResponse(media.rating),
                 notes: media.notes,
                 unique_media_ref: media.unique_media_ref,
                 createdAt: media.createdAt,
@@ -718,7 +747,16 @@ const getUserProfile = async (req, res) => {
                 can_view_lists: canViewPrivateContent,
                 can_view_posts: canViewPrivateContent,
                 profile_locked: !canViewPrivateContent,
-            }
+            },
+            ...(isOwnerOrAdminProfile
+                ? {
+                      accountPendingDeletion: Boolean(user.account_deletion_requested_at),
+                      accountScheduledPurgeAt: user.account_scheduled_purge_at
+                          ? user.account_scheduled_purge_at.toISOString()
+                          : null,
+                      accountDeletionGraceDays: GRACE_DAYS,
+                  }
+                : {}),
         };
 
         res.status(200).json(profileData);
@@ -801,12 +839,18 @@ const getMediaActivityHeatmap = async (req, res) => {
     const tz = sanitizeIanaTimeZone(req.query.tz);
 
     try {
-        const profileUser = await User.findOne({ username }).select('_id username private');
+        const profileUser = await User.findOne({ username }).select('_id username private account_deletion_requested_at');
         if (!profileUser) {
             return res.status(404).json({ error: 'User not found' });
         }
 
         const requestingUser = await getRequestingUserFromToken(req);
+        if (
+            profileUser.account_deletion_requested_at &&
+            !isOwnerOrAdmin(profileUser, requestingUser)
+        ) {
+            return res.status(404).json({ error: 'User not found' });
+        }
         if (!canViewPrivateAccountContent(profileUser, requestingUser)) {
             return res.status(403).json({ error: 'This account is private.', code: 'PROFILE_PRIVATE' });
         }
@@ -1035,7 +1079,102 @@ const updateBio = async (req, res) => {
     } catch (error) {
         return res.status(500).json({ error: error.message || 'Failed to update bio' });
     }
-}
+};
+
+const submitFeedback = async (req, res) => {
+    const { message, category } = req.body || {};
+    if (!message || typeof message !== 'string' || !message.trim()) {
+        return res.status(400).json({ error: 'Message is required.' });
+    }
+    const safe = sanitizeFeedbackMessage(message, { maxLen: 4000 });
+    if (!safe || safe.length < 3) {
+        return res.status(400).json({ error: 'Please enter a slightly longer message.' });
+    }
+    const cat = ['feature', 'bug', 'general'].includes(category) ? category : 'general';
+
+    try {
+        const u = await User.findById(req.user._id).select('username email');
+        if (!u) {
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+
+        await Feedback.create({
+            user_id: u._id,
+            username: u.username,
+            email: u.email || '',
+            category: cat,
+            message: safe,
+        });
+
+        return res.status(200).json({ ok: true });
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to submit feedback' });
+    }
+};
+
+const requestAccountDeletion = async (req, res) => {
+    const { username } = req.params;
+    const { password } = req.body || {};
+
+    if (!password || typeof password !== 'string') {
+        return res.status(400).json({ error: 'Password is required to delete your account.' });
+    }
+
+    try {
+        const user = await User.findOne({ username });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        if (!user._id.equals(req.user._id)) {
+            return res.status(401).json({ error: 'Not authorized' });
+        }
+
+        const match = await bcrypt.compare(password, user.password);
+        if (!match) {
+            return res.status(400).json({ error: 'Incorrect password.' });
+        }
+
+        const now = new Date();
+        user.account_deletion_requested_at = now;
+        user.account_scheduled_purge_at = scheduledPurgeAtFromNow(now);
+        await user.save();
+
+        return res.status(200).json({
+            message: 'Your account is scheduled for deletion.',
+            accountPendingDeletion: true,
+            accountScheduledPurgeAt: user.account_scheduled_purge_at.toISOString(),
+            graceDays: GRACE_DAYS,
+        });
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to process deletion request' });
+    }
+};
+
+const cancelAccountDeletion = async (req, res) => {
+    const { username } = req.params;
+
+    try {
+        const user = await User.findOne({ username });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        if (!user._id.equals(req.user._id)) {
+            return res.status(401).json({ error: 'Not authorized' });
+        }
+
+        user.account_deletion_requested_at = null;
+        user.account_scheduled_purge_at = null;
+        await user.save();
+
+        return res.status(200).json({
+            message: 'Account deletion cancelled.',
+            accountPendingDeletion: false,
+            accountScheduledPurgeAt: null,
+        });
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to cancel deletion' });
+    }
+};
 
 module.exports = {
     signupUser,
@@ -1053,4 +1192,7 @@ module.exports = {
     updateOnboarding,
     updateBio,
     getMediaActivityHeatmap,
-}
+    submitFeedback,
+    requestAccountDeletion,
+    cancelAccountDeletion,
+};

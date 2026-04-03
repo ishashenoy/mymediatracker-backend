@@ -25,7 +25,7 @@ const passResetLimiter = rateLimit({
 });
 
 //controller functions
-const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, getConnections, getIcon, getUserProfile, getMediaActivityHeatmap, searchUsers, sendPasswordResetEmail, resetPassword, updateOnboarding, updateBio} = require('../controllers/userController');
+const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, getConnections, getIcon, getUserProfile, getMediaActivityHeatmap, searchUsers, sendPasswordResetEmail, resetPassword, updateOnboarding, updateBio, submitFeedback, requestAccountDeletion, cancelAccountDeletion} = require('../controllers/userController');
 const { getUserPosts } = require('../controllers/postController');
 
 const router = express.Router();
@@ -38,6 +38,9 @@ router.post('/signup', authLimiter, signupUser);
 
 // Search users (must be before /:username routes to avoid shadowing)
 router.get('/search', limiter, requireAuth, searchUsers);
+
+// Feedback / suggestions (authenticated)
+router.post('/feedback', limiter, requireAuth, submitFeedback);
 
 // follow request route
 // the username is of the receiving user
@@ -80,5 +83,9 @@ router.post('/reset-password/:token', passResetLimiter, resetPassword);
 
 // Save onboarding selections
 router.patch('/:username/onboarding', limiter, requireAuth, updateOnboarding);
+
+// Account deletion (grace period + password confirmation)
+router.post('/:username/request-account-deletion', limiter, requireAuth, requestAccountDeletion);
+router.post('/:username/cancel-account-deletion', limiter, requireAuth, cancelAccountDeletion);
 
 module.exports = router;

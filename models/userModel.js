@@ -70,8 +70,25 @@ const userSchema = new Schema({
         type: Date,
         default: null,
     },
+    account_deletion_requested_at: {
+        type: Date,
+        default: null,
+    },
+    account_scheduled_purge_at: {
+        type: Date,
+        default: null,
+    },
   },
   { timestamps: true }
+);
+
+userSchema.index(
+  { account_scheduled_purge_at: 1 },
+  {
+    partialFilterExpression: {
+      account_scheduled_purge_at: { $type: 'date' },
+    },
+  }
 );
 
 // static signup method
@@ -125,7 +142,11 @@ userSchema.statics.login = async function (email, password) {
     if (!user || !match) {
         throw Error('Incorrect email or password.');
     }
-    
+
+    if (user.account_scheduled_purge_at && new Date() >= new Date(user.account_scheduled_purge_at)) {
+        throw Error('This account is no longer available.');
+    }
+
     return user;
 }
 
