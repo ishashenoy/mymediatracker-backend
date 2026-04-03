@@ -20,7 +20,6 @@ dump.rdb
 backfillSlugs.js
 
 # script
-scripts/users-with-lists.json
-scripts/usersWithLists.js
+scripts
 
 .claude

@@ -6,7 +6,7 @@ const feedSchema = new Schema({
   user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   type: {
     type: String,
-    enum: ['added_media', 'updated_status', 'updated_rating', 'updated_progress', 'milestone'],
+    enum: ['added_media', 'removed_media', 'updated_status', 'updated_rating', 'updated_progress', 'milestone'],
     required: true
   },
   media: { type: mongoose.Schema.Types.ObjectId, ref: 'UserMedia', required: false }, // null for milestones

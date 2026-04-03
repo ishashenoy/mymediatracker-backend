@@ -763,10 +763,36 @@ function sanitizeIanaTimeZone(tz) {
     return s;
 }
 
-// GET /api/user/:username/media-activity — daily counts for library heat map (optional auth)
+function mergeContributionDayRows(rowArrays, yearStr) {
+    const days = {};
+    let total = 0;
+    for (const rows of rowArrays) {
+        if (!Array.isArray(rows)) continue;
+        for (const row of rows) {
+            const key = row._id;
+            if (!key || !String(key).startsWith(yearStr)) continue;
+            const c = typeof row.count === 'number' ? row.count : 0;
+            days[key] = (days[key] || 0) + c;
+            total += c;
+        }
+    }
+    return { days, total };
+}
+
+function mergeBoundsObjects(boundsList) {
+    let minDate = null;
+    let maxDate = null;
+    for (const b of boundsList) {
+        if (!b?.minDate || !b?.maxDate) continue;
+        if (!minDate || b.minDate < minDate) minDate = b.minDate;
+        if (!maxDate || b.maxDate > maxDate) maxDate = b.maxDate;
+    }
+    return minDate && maxDate ? { minDate, maxDate } : null;
+}
+
+// GET /api/user/:username/media-activity — daily contribution counts (optional auth)
 const getMediaActivityHeatmap = async (req, res) => {
     const { username } = req.params;
-    const mode = String(req.query.mode || 'added').toLowerCase() === 'done' ? 'done' : 'added';
     const yearRaw = parseInt(req.query.year, 10);
     const year = Number.isFinite(yearRaw) ? yearRaw : new Date().getFullYear();
     if (year < 1970 || year > 2100) {
@@ -786,103 +812,190 @@ const getMediaActivityHeatmap = async (req, res) => {
         }
 
         const UserMedia = require('../models/userMediaModel');
+        const Feed = require('../models/feedModel');
+        const Post = require('../models/postModel');
+        const Comment = require('../models/commentModel');
+
         const MS_DAY = 86400000;
         const start = new Date(Date.UTC(year, 0, 1) - 2 * MS_DAY);
         const end = new Date(Date.UTC(year + 1, 0, 1) + 2 * MS_DAY);
 
-        let pipeline;
-        if (mode === 'added') {
-            pipeline = [
-                {
-                    $match: {
-                        user_id: profileUser._id,
-                        createdAt: { $gte: start, $lt: end },
+        const uid = profileUser._id;
+        const isPrivate = !!profileUser.private;
+
+        // Feed duplicates adds/updates that we already count from UserMedia. Only count events
+        // that are not represented on UserMedia rows (milestones, removals after delete).
+        const feedExtraTypes = { $in: ['removed_media', 'milestone'] };
+
+        const feedByDay = !isPrivate
+            ? await Feed.aggregate([
+                  { $match: { user: uid, type: feedExtraTypes } },
+                  {
+                      $addFields: {
+                          activityAt: { $ifNull: ['$timestamp', '$createdAt'] },
+                      },
+                  },
+                  {
+                      $match: {
+                          $and: [
+                              { activityAt: { $gte: start, $lt: end } },
+                              { activityAt: { $type: 'date' } },
+                          ],
+                      },
+                  },
+                  {
+                      $group: {
+                          _id: {
+                              $dateToString: { format: '%Y-%m-%d', date: '$activityAt', timezone: tz },
+                          },
+                          count: { $sum: 1 },
+                      },
+                  },
+              ])
+            : [];
+
+        const userMediaContribByDay = await UserMedia.aggregate([
+            { $match: { user_id: uid } },
+            {
+                $addFields: {
+                    contribDates: {
+                        $concatArrays: [
+                            {
+                                $cond: [
+                                    {
+                                        $and: [
+                                            { $gte: ['$createdAt', start] },
+                                            { $lt: ['$createdAt', end] },
+                                        ],
+                                    },
+                                    ['$createdAt'],
+                                    [],
+                                ],
+                            },
+                            {
+                                $cond: [
+                                    {
+                                        $and: [
+                                            { $gt: ['$updatedAt', '$createdAt'] },
+                                            { $gte: ['$updatedAt', start] },
+                                            { $lt: ['$updatedAt', end] },
+                                        ],
+                                    },
+                                    ['$updatedAt'],
+                                    [],
+                                ],
+                            },
+                        ],
                     },
                 },
+            },
+            { $unwind: '$contribDates' },
+            {
+                $group: {
+                    _id: {
+                        $dateToString: { format: '%Y-%m-%d', date: '$contribDates', timezone: tz },
+                    },
+                    count: { $sum: 1 },
+                },
+            },
+        ]);
+
+        const postsByDay = await Post.aggregate([
+            { $match: { author_id: uid, created_at: { $gte: start, $lt: end } } },
+            {
+                $group: {
+                    _id: { $dateToString: { format: '%Y-%m-%d', date: '$created_at', timezone: tz } },
+                    count: { $sum: 1 },
+                },
+            },
+        ]);
+
+        const commentsByDay = await Comment.aggregate([
+            { $match: { author_id: uid, created_at: { $gte: start, $lt: end } } },
+            {
+                $group: {
+                    _id: { $dateToString: { format: '%Y-%m-%d', date: '$created_at', timezone: tz } },
+                    count: { $sum: 1 },
+                },
+            },
+        ]);
+
+        const yearStr = String(year);
+        const { days, total } = mergeContributionDayRows(
+            [feedByDay, userMediaContribByDay, postsByDay, commentsByDay],
+            yearStr
+        );
+
+        const [feedBounds, postBounds, commentBounds, umBounds] = await Promise.all([
+            !isPrivate
+                ? Feed.aggregate([
+                      { $match: { user: uid, type: feedExtraTypes } },
+                      {
+                          $addFields: {
+                              activityAt: { $ifNull: ['$timestamp', '$createdAt'] },
+                          },
+                      },
+                      { $match: { activityAt: { $type: 'date' } } },
+                      {
+                          $group: {
+                              _id: null,
+                              minDate: { $min: '$activityAt' },
+                              maxDate: { $max: '$activityAt' },
+                          },
+                      },
+                  ])
+                : Promise.resolve([]),
+            Post.aggregate([
+                { $match: { author_id: uid } },
                 {
                     $group: {
-                        _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: tz } },
-                        count: { $sum: 1 },
+                        _id: null,
+                        minDate: { $min: '$created_at' },
+                        maxDate: { $max: '$created_at' },
                     },
                 },
-            ];
-        } else {
-            pipeline = [
+            ]),
+            Comment.aggregate([
+                { $match: { author_id: uid } },
                 {
-                    $match: {
-                        user_id: profileUser._id,
-                        status: 'done',
+                    $group: {
+                        _id: null,
+                        minDate: { $min: '$created_at' },
+                        maxDate: { $max: '$created_at' },
                     },
                 },
+            ]),
+            UserMedia.aggregate([
+                { $match: { user_id: uid } },
                 {
                     $addFields: {
-                        activityAt: { $ifNull: ['$finished_at', '$updatedAt'] },
+                        lastActivity: {
+                            $cond: [{ $gt: ['$updatedAt', '$createdAt'] }, '$updatedAt', '$createdAt'],
+                        },
                     },
                 },
-                {
-                    $match: {
-                        activityAt: { $gte: start, $lt: end },
-                    },
-                },
-                {
-                    $group: {
-                        _id: { $dateToString: { format: '%Y-%m-%d', date: '$activityAt', timezone: tz } },
-                        count: { $sum: 1 },
-                    },
-                },
-            ];
-        }
-
-        const byDay = await UserMedia.aggregate(pipeline);
-
-        const days = {};
-        let total = 0;
-        const yearStr = String(year);
-        for (const row of byDay) {
-            if (!row._id || !row._id.startsWith(yearStr)) continue;
-            days[row._id] = row.count;
-            total += row.count;
-        }
-
-        let yearBoundsAgg;
-        if (mode === 'added') {
-            yearBoundsAgg = await UserMedia.aggregate([
-                { $match: { user_id: profileUser._id } },
                 {
                     $group: {
                         _id: null,
                         minDate: { $min: '$createdAt' },
-                        maxDate: { $max: '$createdAt' },
+                        maxDate: { $max: '$lastActivity' },
                     },
                 },
-            ]);
-        } else {
-            yearBoundsAgg = await UserMedia.aggregate([
-                { $match: { user_id: profileUser._id, status: 'done' } },
-                {
-                    $addFields: {
-                        activityAt: { $ifNull: ['$finished_at', '$updatedAt'] },
-                    },
-                },
-                {
-                    $match: { activityAt: { $type: 'date' } },
-                },
-                {
-                    $group: {
-                        _id: null,
-                        minDate: { $min: '$activityAt' },
-                        maxDate: { $max: '$activityAt' },
-                    },
-                },
-            ]);
-        }
+            ]),
+        ]);
 
-        const bounds = yearBoundsAgg[0];
+        const mergedBounds = mergeBoundsObjects([
+            feedBounds[0],
+            postBounds[0],
+            commentBounds[0],
+            umBounds[0],
+        ]);
+
         const currentYear = new Date().getFullYear();
         let availableYears = [currentYear];
-        if (bounds?.minDate && bounds?.maxDate) {
-            const yMin = bounds.minDate.getFullYear();
-            const yMax = bounds.maxDate.getFullYear();
+        if (mergedBounds?.minDate && mergedBounds?.maxDate) {
+            const yMin = mergedBounds.minDate.getFullYear();
+            const yMax = mergedBounds.maxDate.getFullYear();
             availableYears = [];
             for (let y = yMin; y <= yMax; y++) availableYears.push(y);
             if (!availableYears.includes(currentYear)) {
@@ -893,13 +1006,13 @@ const getMediaActivityHeatmap = async (req, res) => {
 
         return res.status(200).json({
             year,
-            mode,
             days,
             total,
             available_years: availableYears,
             timezone: tz,
         });
     } catch (error) {
+        console.error('getMediaActivityHeatmap', error);
         return res.status(500).json({ error: 'Failed to load media activity' });
     }
 };

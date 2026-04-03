@@ -62,7 +62,7 @@ router.get('/:username/connections', limiter, requireAuth, getConnections);
 // get user profile (public view, but enhanced data for authenticated users)
 router.get('/:username/profile', limiter, getUserProfile);
 
-// media library activity heat map (follows same visibility as profile lists)
+// profile contributions heat map (follows same visibility as profile lists)
 router.get('/:username/media-activity', limiter, getMediaActivityHeatmap);
 
 // get user posts + reposts

@@ -650,6 +650,8 @@ const deleteMedia = async (req, res) => {
         const serialized = serializeUserMedia(userMedia);
         const uniqueMediaId = userMedia.unique_media_ref?._id;
 
+        await createFeedActivity(user_id, 'removed_media', userMedia._id);
+
         await UserMedia.deleteOne({ _id: id, user_id });
 
         // Clean up any ListItems referencing this UserMedia so they don't appear as broken "no cover" entries
