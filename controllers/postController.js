@@ -8,7 +8,7 @@ const List = require('../models/listModel');
 const { fireEvent } = require('./eventsController');
 const { createNotification } = require('./notificationController');
 const { sanitizeText, sanitizeUrl, sanitizeIdentifier } = require('../utils/sanitize');
-const { canViewPrivateAccountContent, isOwnerOrAdmin } = require('../utils/privacy');
+const { canViewPrivateAccountContent, isOwnerOrAdmin, canPostDiscussionOnList } = require('../utils/privacy');
 const {
   MAX_EMBEDDED_IMAGES,
   uploadPostImageBuffer,
@@ -80,13 +80,14 @@ const createPost = async (req, res) => {
     }
   }
 
-  // Validate linked_list_id if provided
+  // Validate linked_list_id if provided (same visibility rules as viewing the list)
   if (linked_list_id) {
     try {
       const list = await List.findById(linked_list_id).lean();
       if (!list) return res.status(400).json({ error: 'Linked list not found.' });
-      if (list.user_id.toString() !== userId.toString()) {
-        return res.status(403).json({ error: 'You can only link your own lists.' });
+      const allowed = await canPostDiscussionOnList(list, userId);
+      if (!allowed) {
+        return res.status(403).json({ error: 'You do not have permission to post on this list.' });
       }
     } catch {
       return res.status(400).json({ error: 'Invalid linked_list_id.' });

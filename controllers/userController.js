@@ -34,6 +34,7 @@ const serializePublicUser = (user) => {
         _id: user._id,
         username: user.username,
         icon: user.icon || null,
+        banner: user.banner || null,
         is_creator_badge: toCreatorBadge(user.is_creator_badge),
     };
 };
@@ -43,11 +44,23 @@ const hasAsciiChunk = (buffer, chunk) => {
     return buffer.indexOf(Buffer.from(chunk, 'ascii')) !== -1;
 };
 
+/** GIF by MIME or file signature (catches mislabeled uploads). */
+const isGifUpload = (file) => {
+    if (!file || !Buffer.isBuffer(file.buffer)) return false;
+    if ((file.mimetype || '').toLowerCase() === 'image/gif') return true;
+    if (file.buffer.length >= 6) {
+        const head = file.buffer.toString('ascii', 0, 6);
+        if (head === 'GIF87a' || head === 'GIF89a') return true;
+    }
+    return false;
+};
+
 const isAnimatedImageUpload = (file) => {
     if (!file || !Buffer.isBuffer(file.buffer)) return false;
 
+    if (isGifUpload(file)) return true;
+
     const mime = (file.mimetype || '').toLowerCase();
-    if (mime === 'image/gif') return true;
 
     // APNG files contain the animation control chunk.
     if (mime === 'image/png' && hasAsciiChunk(file.buffer, 'acTL')) {
@@ -140,6 +153,7 @@ const loginUser = async (req, res) => {
       id: user._id.toString(),
       token,
       icon: user.icon || null,
+      banner: user.banner || null,
       is_creator_badge: toCreatorBadge(user.is_creator_badge),
       accountPendingDeletion: isAccountPendingDeletion(user),
       accountScheduledPurgeAt: user.account_scheduled_purge_at
@@ -326,6 +340,81 @@ const changeIcon = async (req, res) => {
     } catch (error) {
         if (!res.headersSent) {
             return res.status(500).json({ error: error.message || "Failed to process icon" });
+        }
+    }
+};
+
+// change user profile banner
+const changeBanner = async (req, res) => {
+    const { username } = req.params; // this is the current page's username
+
+    try {
+        const user = await User.findOne({ username: username });
+        if (!user) return res.status(404).json({ error: "User not found" });
+
+        // this is the sender's trusted user id verified by the JWT
+        const senderId = req.user._id;
+        if (!user._id.equals(senderId)) return res.status(401).json({ error: "Not authorized" });
+
+        if (!req.file || !Buffer.isBuffer(req.file.buffer)) {
+            return res.status(400).json({ error: "No image file was uploaded" });
+        }
+
+        if (isGifUpload(req.file)) {
+            return res.status(400).json({ error: "GIF images can't be used as profile banners." });
+        }
+
+        if (isAnimatedImageUpload(req.file)) {
+            return res.status(403).json({ error: "Animated profile banners are currently disabled." });
+        }
+
+        await cloudinary.uploader.destroy(`banners/${user._id}`, { resource_type: 'image' }).catch(() => {});
+
+        const uploadBanner = () =>
+            new Promise((resolve, reject) => {
+                cloudinary.uploader.upload_stream(
+                    {
+                        public_id: `banners/${user._id}`,
+                        overwrite: true,
+                        format: "webp",
+                        transformation: [
+                            { width: 1800, height: 600, crop: "fill", gravity: "auto" },
+                            { quality: "auto:low", fetch_format: "auto" },
+                            { dpr: "auto" },
+                            { compression: "medium" }
+                        ]
+                    },
+                    (error, result) => {
+                        if (error) reject(error);
+                        else resolve(result);
+                    }
+                ).end(req.file.buffer);
+            });
+
+        const result = await uploadBanner();
+
+        user.banner = result.secure_url;
+        await user.save();
+
+        // Log upload to audit trail (fire-and-forget)
+        setImmediate(async () => {
+            try {
+                const UserUpload = require('../models/userUploadModel');
+                await UserUpload.create({
+                    user_id: user._id,
+                    cloudinary_public_id: `banners/${user._id}`,
+                    resource_type: 'banner',
+                    linked_entity_id: user._id,
+                    linked_entity_type: 'User',
+                    status: 'active',
+                });
+            } catch (e) { /* silent */ }
+        });
+
+        return res.status(200).json({ message: "Banner processed", image_url: result.secure_url });
+    } catch (error) {
+        if (!res.headersSent) {
+            return res.status(500).json({ error: error.message || "Failed to process banner" });
         }
     }
 };
@@ -730,6 +819,7 @@ const getUserProfile = async (req, res) => {
                 _id: user._id,
                 username: user.username,
                 icon: user.icon,
+                banner: user.banner || null,
                 is_creator_badge: toCreatorBadge(user.is_creator_badge),
                 bio: user.bio || '',
                 private: user.private,
@@ -1183,6 +1273,7 @@ module.exports = {
     unfollowRequest,
     changePrivacy,
     changeIcon,
+    changeBanner,
     getConnections,
     getIcon,
     getUserProfile,

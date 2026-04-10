@@ -31,6 +31,10 @@ const userSchema = new Schema({
         type: String,
         required: false
     },
+    banner: {
+        type: String,
+        required: false
+    },
     is_creator_badge: {
         type: Boolean,
         default: false

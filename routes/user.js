@@ -25,7 +25,7 @@ const passResetLimiter = rateLimit({
 });
 
 //controller functions
-const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, getConnections, getIcon, getUserProfile, getMediaActivityHeatmap, searchUsers, sendPasswordResetEmail, resetPassword, updateOnboarding, updateBio, submitFeedback, requestAccountDeletion, cancelAccountDeletion} = require('../controllers/userController');
+const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getUserProfile, getMediaActivityHeatmap, searchUsers, sendPasswordResetEmail, resetPassword, updateOnboarding, updateBio, submitFeedback, requestAccountDeletion, cancelAccountDeletion} = require('../controllers/userController');
 const { getUserPosts } = require('../controllers/postController');
 
 const router = express.Router();
@@ -58,6 +58,7 @@ router.patch('/:username/bio', limiter, requireAuth, updateBio);
 
 // upload icon
 router.post('/:username/icon', limiter, requireAuth, upload.single('image'), changeIcon);
+router.post('/:username/banner', limiter, requireAuth, upload.single('image'), changeBanner);
 
 // get connections list
 router.get('/:username/connections', limiter, requireAuth, getConnections);

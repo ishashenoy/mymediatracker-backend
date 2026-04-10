@@ -15,7 +15,7 @@ const userUploadSchema = new mongoose.Schema({
   // What the asset is used for
   resource_type: {
     type: String,
-    enum: ['icon'],
+    enum: ['icon', 'banner'],
     required: true,
   },
   linked_entity_id: {
