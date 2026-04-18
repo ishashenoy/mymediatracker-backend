@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Post = require('../models/postModel');
 const PostInteraction = require('../models/postInteractionModel');
 const PollVote = require('../models/pollVoteModel');
@@ -144,7 +145,7 @@ const createPost = async (req, res) => {
     }
 
     const post = await Post.create(postData);
-    await post.populate('author_id', 'username icon is_creator_badge');
+    await post.populate('author_id', 'username icon is_admin_badge is_creator_badge');
 
     // Populate linked list name for response
     let linkedListData = null;
@@ -207,7 +208,7 @@ const getFeedPosts = async (req, res) => {
     if (cursor) query.created_at = { $lt: new Date(cursor) };
 
     const rawPosts = await Post.find(query)
-      .populate('author_id', 'username icon is_creator_badge')
+      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -234,7 +235,7 @@ const getPostById = async (req, res) => {
 
   try {
     const raw = await Post.findById(postId)
-      .populate('author_id', 'username icon is_creator_badge')
+      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
       .lean();
     if (!raw) return res.status(404).json({ error: 'Post not found.' });
 
@@ -276,7 +277,7 @@ const getPostsByMedia = async (req, res) => {
       : mediaMatch;
 
     const rawPosts = await Post.find(query)
-      .populate('author_id', 'username icon is_creator_badge')
+      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -308,7 +309,7 @@ const getPostsByList = async (req, res) => {
     if (cursor) query.created_at = { $lt: new Date(cursor) };
 
     const rawPosts = await Post.find(query)
-      .populate('author_id', 'username icon is_creator_badge')
+      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -480,7 +481,7 @@ const votePoll = async (req, res) => {
 
 const addComment = async (req, res) => {
   const { postId } = req.params;
-  const { body, session_id, images } = req.body;
+  const { body, session_id, images, parent_comment_id } = req.body;
   const userId = req.user._id;
 
   const safeBody = sanitizeText(body, { maxLen: 500, allowNewlines: true });
@@ -492,6 +493,17 @@ const addComment = async (req, res) => {
   }
   // length already capped by sanitizer (defense-in-depth)
 
+  let parentComment = null;
+  if (parent_comment_id != null && String(parent_comment_id).trim() !== '') {
+    if (!mongoose.Types.ObjectId.isValid(String(parent_comment_id))) {
+      return res.status(400).json({ error: 'Invalid parent comment.' });
+    }
+    parentComment = await Comment.findById(parent_comment_id).lean();
+    if (!parentComment || String(parentComment.post_id) !== String(postId)) {
+      return res.status(404).json({ error: 'Parent comment not found.' });
+    }
+  }
+
   try {
     const post = await Post.findById(postId);
     if (!post) return res.status(404).json({ error: 'Post not found.' });
@@ -501,27 +513,48 @@ const addComment = async (req, res) => {
       author_id: userId,
       body: safeBody,
       ...(safeImages.length > 0 ? { images: safeImages } : {}),
+      ...(parentComment ? { parent_comment_id: parentComment._id } : {}),
     });
 
     await Post.findByIdAndUpdate(postId, { $inc: { comment_count: 1 } });
-    await comment.populate('author_id', 'username icon is_creator_badge');
+    await comment.populate('author_id', 'username icon is_admin_badge is_creator_badge');
 
     fireEvent(userId, 'post_comment', null, {
       post_id: postId,
       session_id: safeSessionId,
     });
 
-    createNotification({
-      recipientId: post.author_id,
-      actorId: userId,
-      type: 'post_commented',
-      entityType: 'post',
-      entityId: postId,
-    });
+    if (!parentComment) {
+      createNotification({
+        recipientId: post.author_id,
+        actorId: userId,
+        type: 'post_commented',
+        entityType: 'post',
+        entityId: postId,
+      });
+    } else {
+      createNotification({
+        recipientId: parentComment.author_id,
+        actorId: userId,
+        type: 'comment_replied',
+        entityType: 'comment',
+        entityId: comment._id,
+      });
+      if (String(post.author_id) !== String(parentComment.author_id)) {
+        createNotification({
+          recipientId: post.author_id,
+          actorId: userId,
+          type: 'post_commented',
+          entityType: 'post',
+          entityId: postId,
+        });
+      }
+    }
 
     return res.status(201).json({
       comment: {
         _id: comment._id,
+        parent_comment_id: parentComment ? parentComment._id : null,
         body: comment.body,
         images: comment.images || [],
         created_at: comment.created_at,
@@ -550,7 +583,7 @@ const getComments = async (req, res) => {
     if (cursor) query.created_at = { $gt: new Date(cursor) };
 
     const rawComments = await Comment.find(query)
-      .populate('author_id', 'username icon is_creator_badge')
+      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
       .sort({ created_at: 1 })
       .limit(limit + 1)
       .lean();
@@ -567,6 +600,7 @@ const getComments = async (req, res) => {
 
     const shaped = comments.map(c => ({
       _id: c._id,
+      parent_comment_id: c.parent_comment_id || null,
       body: c.body,
       images: c.images || [],
       created_at: c.created_at,
@@ -609,7 +643,7 @@ const getBookmarkedPosts = async (req, res) => {
 
     const postIds = interactions.map(i => i.post_id);
     const posts = await Post.find({ _id: { $in: postIds } })
-      .populate('author_id', 'username icon is_creator_badge')
+      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
       .lean();
 
     // Preserve bookmark-date order
@@ -650,7 +684,7 @@ const getBookmarkedComments = async (req, res) => {
 
     const commentIds = interactions.map(i => i.comment_id);
     const comments = await Comment.find({ _id: { $in: commentIds } })
-      .populate('author_id', 'username icon is_creator_badge')
+      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
       .lean();
 
     const postIds = [...new Set(comments.map(c => c.post_id.toString()))];
@@ -662,6 +696,7 @@ const getBookmarkedComments = async (req, res) => {
 
     const shaped = ordered.map(c => ({
       _id: c._id,
+      parent_comment_id: c.parent_comment_id || null,
       body: c.body,
       images: c.images || [],
       created_at: c.created_at,
@@ -705,7 +740,7 @@ const getUserPosts = async (req, res) => {
     const ownPostQuery = { author_id: profileUserId };
     if (dateFilter) ownPostQuery.created_at = dateFilter;
     const ownPosts = await Post.find(ownPostQuery)
-      .populate('author_id', 'username icon is_creator_badge')
+      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -721,7 +756,7 @@ const getUserPosts = async (req, res) => {
     if (repostInteractions.length > 0) {
       const repostPostIds = repostInteractions.map(i => i.post_id);
       const repostedPosts = await Post.find({ _id: { $in: repostPostIds } })
-        .populate('author_id', 'username icon is_creator_badge')
+        .populate('author_id', 'username icon is_admin_badge is_creator_badge')
         .lean();
       const repostDateMap = new Map(
         repostInteractions.map(i => [i.post_id.toString(), i.created_at])
@@ -776,7 +811,7 @@ const getSuggestions = async (req, res) => {
       { $addFields: { follower_count: { $size: { $ifNull: ['$followers', []] } } } },
       { $sort: { follower_count: -1 } },
       { $limit: 5 },
-      { $project: { username: 1, icon: 1, is_creator_badge: { $eq: ['$is_creator_badge', true] } } },
+      { $project: { username: 1, icon: 1, is_admin_badge: { $or: [{ $eq: ['$is_admin_badge', true] }, { $eq: ['$is_creator_badge', true] }] } } },
     ]);
 
     return res.status(200).json({ suggestions });
@@ -846,12 +881,25 @@ const deleteComment = async (req, res) => {
     if (String(comment.author_id) !== String(userId)) {
       return res.status(403).json({ error: 'Not authorized.' });
     }
+    if (String(comment.post_id) !== String(postId)) {
+      return res.status(400).json({ error: 'Comment does not belong to this post.' });
+    }
 
-    await CommentInteraction.deleteMany({ comment_id: commentId });
-    await Comment.findByIdAndDelete(commentId);
-    await Post.findByIdAndUpdate(postId, { $inc: { comment_count: -1 } });
+    const idsToDelete = [];
+    let frontier = [comment._id];
+    while (frontier.length > 0) {
+      idsToDelete.push(...frontier);
+      const children = await Comment.find({ parent_comment_id: { $in: frontier } })
+        .select('_id')
+        .lean();
+      frontier = children.map((c) => c._id);
+    }
 
-    return res.status(200).json({ success: true });
+    await CommentInteraction.deleteMany({ comment_id: { $in: idsToDelete } });
+    await Comment.deleteMany({ _id: { $in: idsToDelete } });
+    await Post.findByIdAndUpdate(postId, { $inc: { comment_count: -idsToDelete.length } });
+
+    return res.status(200).json({ success: true, deletedCount: idsToDelete.length });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

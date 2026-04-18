@@ -260,6 +260,38 @@ const getMedias = async (req, res) => {
     }
 };
 
+// GET the authenticated user's library entry for a canonical title (type + source + media_id)
+const getMyEntryByLookup = async (req, res) => {
+    try {
+        const user_id = req.user._id;
+        const type = String(req.query.type || "").trim();
+        const source = String(req.query.source || "").trim().toLowerCase();
+        const media_id = String(req.query.media_id || "").trim();
+
+        if (!type || !source || !media_id) {
+            return res.status(400).json({ error: "type, source, and media_id are required" });
+        }
+
+        const uniqueMedia = await UniqueMedia.findOne({ type, source, media_id });
+        if (!uniqueMedia) {
+            return res.status(200).json({ entry: null });
+        }
+
+        const entry = await UserMedia.findOne({
+            user_id,
+            unique_media_ref: uniqueMedia._id,
+        }).populate("unique_media_ref");
+
+        if (!entry) {
+            return res.status(200).json({ entry: null });
+        }
+
+        return res.status(200).json({ entry: serializeUserMedia(entry) });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+};
+
 // GET media of a profile
 const getProfileMedia = async (req, res) => {
     const { username } = req.params;
@@ -360,7 +392,7 @@ const suggestMediaMatches = async (req, res) => {
 };
 
 // GET trending: in-app popularity from UserMedia + UniqueMedia. ?type=all = all types; ?type=anime|… = that type only.
-const TRENDING_ALLOWED_TYPES = ['anime', 'manga', 'movie', 'tv', 'game', 'book', 'web-video'];
+const TRENDING_ALLOWED_TYPES = ['anime', 'manga', 'movie', 'tv', 'game', 'book', 'music', 'web-video'];
 
 const trendingProjection = {
     _id: 0,
@@ -999,6 +1031,7 @@ module.exports = {
     getProfileMedia,
     getTrendingMedia,
     getMedias,
+    getMyEntryByLookup,
     deleteMedia,
     updateMedia,
     importMedia,

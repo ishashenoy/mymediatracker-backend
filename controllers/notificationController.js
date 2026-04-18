@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const Notification = require('../models/notificationModel');
 const Comment = require('../models/commentModel');
+const { userHasAdminBadge } = require('../utils/adminBadge');
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
@@ -47,7 +48,7 @@ const listNotifications = async (req, res) => {
     const rows = await Notification.find(query)
       .sort({ created_at: -1 })
       .limit(limit + 1)
-      .populate('actor_id', 'username icon is_creator_badge')
+      .populate('actor_id', 'username icon is_admin_badge is_creator_badge')
       .lean();
 
     const hasMore = rows.length > limit;
@@ -77,7 +78,7 @@ const listNotifications = async (req, res) => {
           _id: n.actor_id._id,
           username: n.actor_id.username,
           icon: n.actor_id.icon || null,
-          is_creator_badge: n.actor_id.is_creator_badge === true,
+          is_admin_badge: userHasAdminBadge(n.actor_id),
         } : null,
       })),
       hasMore,

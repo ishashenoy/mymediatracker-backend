@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const validator = require('validator');
+const { validateUsernameShape } = require('../utils/sanitize');
 
 const Schema = mongoose.Schema;
 
@@ -35,7 +36,7 @@ const userSchema = new Schema({
         type: String,
         required: false
     },
-    is_creator_badge: {
+    is_admin_badge: {
         type: Boolean,
         default: false
     },
@@ -48,6 +49,24 @@ const userSchema = new Schema({
         type: String,
         default: '',
         maxlength: 200,
+        trim: true,
+    },
+    instagram_handle: {
+        type: String,
+        default: '',
+        maxlength: 30,
+        trim: true,
+    },
+    twitter_handle: {
+        type: String,
+        default: '',
+        maxlength: 15,
+        trim: true,
+    },
+    tiktok_handle: {
+        type: String,
+        default: '',
+        maxlength: 24,
         trim: true,
     },
 
@@ -107,6 +126,12 @@ userSchema.statics.signup = async function (email, password, username) {
         throw Error('Email is not valid');
     }
 
+    const usernameCheck = validateUsernameShape(username);
+    if (!usernameCheck.ok) {
+        throw Error(usernameCheck.error);
+    }
+    username = usernameCheck.username;
+
     const customOptions = {
         minLength: 8,
         minSymbols: 0,
@@ -114,7 +139,7 @@ userSchema.statics.signup = async function (email, password, username) {
         minUppercase: 0
     };
 
-    const exists = await this.findOne({ email }) || await this.findOne({ username: new RegExp(`^${username}$`, 'i') });
+    const exists = await this.findOne({ email }) || await this.findOne({ username });
 
     if (exists){
         throw Error('Email/username already in use');

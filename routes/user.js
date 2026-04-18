@@ -25,7 +25,7 @@ const passResetLimiter = rateLimit({
 });
 
 //controller functions
-const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getUserProfile, getMediaActivityHeatmap, searchUsers, sendPasswordResetEmail, resetPassword, updateOnboarding, updateBio, submitFeedback, requestAccountDeletion, cancelAccountDeletion} = require('../controllers/userController');
+const {signupUser, loginUser, followRequest, unfollowRequest, changePrivacy, changeIcon, changeBanner, getConnections, getIcon, getUserProfile, getMediaActivityHeatmap, getStarReceipt, searchUsers, sendPasswordResetEmail, resetPassword, updateOnboarding, updateBio, updateSocialLinks, submitFeedback, requestAccountDeletion, cancelAccountDeletion} = require('../controllers/userController');
 const { getUserPosts } = require('../controllers/postController');
 
 const router = express.Router();
@@ -56,6 +56,9 @@ router.patch('/:username/privacy', limiter, requireAuth, changePrivacy);
 // update profile bio
 router.patch('/:username/bio', limiter, requireAuth, updateBio);
 
+// social profile links (Instagram / X / TikTok)
+router.patch('/:username/social-links', limiter, requireAuth, updateSocialLinks);
+
 // upload icon
 router.post('/:username/icon', limiter, requireAuth, upload.single('image'), changeIcon);
 router.post('/:username/banner', limiter, requireAuth, upload.single('image'), changeBanner);
@@ -68,6 +71,9 @@ router.get('/:username/profile', limiter, getUserProfile);
 
 // profile contributions heat map (follows same visibility as profile lists)
 router.get('/:username/media-activity', limiter, getMediaActivityHeatmap);
+
+// Top-rated "star receipt" (same visibility as profile library)
+router.get('/:username/star-receipt', limiter, getStarReceipt);
 
 // get user posts + reposts
 router.get('/:username/posts', limiter, requireAuth, getUserPosts);

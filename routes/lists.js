@@ -7,11 +7,13 @@ const ListItem = require('../models/listItemModel');
 const UserMedia = require('../models/userMediaModel');
 const UniqueMedia = require('../models/uniqueMediaModel');
 const User = require('../models/userModel');
+const SavedList = require('../models/savedListModel');
 const requireAuth = require('../middleware/requireAuth');
 const { findOrCreateUniqueMedia } = require('../controllers/mediaController');
 const { fireEvent } = require('../controllers/eventsController');
 const { sanitizeText, sanitizeUrl } = require('../utils/sanitize');
 const { isAdminUser, isOwnerOrAdmin, canViewPrivateAccountContent } = require('../utils/privacy');
+const { userHasAdminBadge } = require('../utils/adminBadge');
 
 // Set privacy for a list
 router.put('/:listId/privacy', requireAuth, async (req, res) => {
@@ -531,6 +533,185 @@ router.get('/user/:username/archived', requireAuth, async (req, res) => {
   }
 });
 
+// Search lists: own lists (any privacy) + other users' public lists, when the owner account is visible
+router.get('/search', requireAuth, async (req, res) => {
+  const raw = String(req.query.q || '').trim();
+  if (!raw) {
+    return res.status(400).json({ error: 'Search query is required.' });
+  }
+  if (raw.length > 100) {
+    return res.status(400).json({ error: 'Search query is too long.' });
+  }
+
+  try {
+    const requestingUser = await getRequestingUser(req);
+    if (!requestingUser) {
+      return res.status(401).json({ error: 'Authorization required.' });
+    }
+
+    const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const namePattern = new RegExp(escapeRegex(raw), 'i');
+
+    const candidateLists = await List.find({
+      archived: { $ne: true },
+      name: namePattern,
+      $or: [{ user_id: requestingUser._id }, { private: { $ne: true } }],
+    })
+      .limit(120)
+      .populate({
+        path: 'user_id',
+        select: 'username private account_deletion_requested_at icon',
+      });
+
+    const visible = [];
+    for (const list of candidateLists) {
+      const owner = list.user_id;
+      if (!owner) continue;
+      const isMine = owner._id.toString() === requestingUser._id.toString();
+      if (!isMine && !canViewPrivateAccountContent(owner, requestingUser)) continue;
+      visible.push(list);
+    }
+
+    const withCounts = await Promise.all(
+      visible.map(async (list) => {
+        const totalCount = await ListItem.countDocuments({ list_id: list._id });
+        return { list, totalCount };
+      })
+    );
+    withCounts.sort((a, b) => b.totalCount - a.totalCount);
+    const topByItems = withCounts.slice(0, 50);
+
+    const listsWithItems = await Promise.all(
+      topByItems.map(async ({ list, totalCount }) => {
+        const ownerDoc = list.user_id;
+        const previewItems = await ListItem.find({ list_id: list._id })
+          .populate({
+            path: 'user_media_id',
+            populate: { path: 'unique_media_ref' },
+          })
+          .sort({ position: 1, createdAt: -1 })
+          .limit(4);
+        const listObj = list.toObject();
+        return {
+          ...listObj,
+          user_id: ownerDoc._id,
+          owner: ownerDoc
+            ? {
+                username: ownerDoc.username,
+                icon: ownerDoc.icon || null,
+              }
+            : undefined,
+          items: previewItems,
+          totalCount,
+        };
+      })
+    );
+
+    return res.status(200).json({ lists: listsWithItems });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Lists the current user saved (other people's lists only)
+router.get('/saved', requireAuth, async (req, res) => {
+  try {
+    const requestingUser = await getRequestingUser(req);
+    if (!requestingUser) {
+      return res.status(401).json({ error: 'Authorization required.' });
+    }
+
+    const bookmarks = await SavedList.find({ user_id: requestingUser._id })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean();
+
+    const listsOut = [];
+    for (const bm of bookmarks) {
+      const list = await List.findById(bm.list_id);
+      if (!list || list.archived) continue;
+      if (list.user_id.toString() === requestingUser._id.toString()) continue;
+      if (!(await canViewList(list, requestingUser))) continue;
+
+      const ownerDoc = await User.findById(list.user_id).select('username icon');
+      if (!ownerDoc) continue;
+
+      const previewItems = await ListItem.find({ list_id: list._id })
+        .populate({
+          path: 'user_media_id',
+          populate: { path: 'unique_media_ref' },
+        })
+        .sort({ position: 1, createdAt: -1 })
+        .limit(4);
+      const totalCount = await ListItem.countDocuments({ list_id: list._id });
+      const listObj = list.toObject();
+      listsOut.push({
+        ...listObj,
+        user_id: ownerDoc._id,
+        owner: {
+          username: ownerDoc.username,
+          icon: ownerDoc.icon || null,
+        },
+        items: previewItems,
+        totalCount,
+      });
+    }
+
+    return res.status(200).json({ lists: listsOut });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/:listId/save', requireAuth, async (req, res) => {
+  const { listId } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(listId)) {
+    return res.status(400).json({ error: 'Invalid listId.' });
+  }
+  try {
+    const requestingUser = await getRequestingUser(req);
+    if (!requestingUser) return res.status(401).json({ error: 'Authorization required.' });
+
+    const list = await List.findById(listId);
+    if (!list) return res.status(404).json({ error: 'List not found.' });
+    if (list.archived) return res.status(400).json({ error: 'This list is archived.' });
+    if (!(await canViewList(list, requestingUser))) {
+      return res.status(403).json({ error: 'You cannot save this list.' });
+    }
+    if (list.user_id.toString() === requestingUser._id.toString()) {
+      return res.status(400).json({ error: 'You cannot save your own list.' });
+    }
+
+    try {
+      await SavedList.create({ user_id: requestingUser._id, list_id: list._id });
+    } catch (err) {
+      if (err.code === 11000) {
+        return res.status(200).json({ saved: true, alreadySaved: true });
+      }
+      throw err;
+    }
+    return res.status(201).json({ saved: true });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/:listId/save', requireAuth, async (req, res) => {
+  const { listId } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(listId)) {
+    return res.status(400).json({ error: 'Invalid listId.' });
+  }
+  try {
+    const requestingUser = await getRequestingUser(req);
+    if (!requestingUser) return res.status(401).json({ error: 'Authorization required.' });
+
+    await SavedList.deleteOne({ user_id: requestingUser._id, list_id: listId });
+    return res.status(200).json({ saved: false });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 // Get individual list details
 router.get('/:listId', async (req, res) => {
   const { listId } = req.params;
@@ -609,21 +790,35 @@ router.get('/:listId/full', async (req, res) => {
       })
       .sort({ position: 1, createdAt: -1 });
     const listObject = list.toObject();
-    const listOwner = await User.findById(list.user_id).select('_id username icon is_creator_badge');
+    const listOwner = await User.findById(list.user_id).select('_id username icon is_admin_badge is_creator_badge');
     const owner = listOwner
       ? {
           _id: listOwner._id,
           username: listOwner.username,
           icon: listOwner.icon || null,
-          is_creator_badge: listOwner.is_creator_badge === true,
+          is_admin_badge: userHasAdminBadge(listOwner),
         }
       : null;
+
+    let viewer_has_saved = false;
+    if (
+      requestingUser
+      && list.user_id.toString() !== requestingUser._id.toString()
+    ) {
+      viewer_has_saved = !!(await SavedList.findOne({
+        user_id: requestingUser._id,
+        list_id: list._id,
+      })
+        .select('_id')
+        .lean());
+    }
 
     return res.status(200).json({
       ...listObject,
       items,
       totalCount: items.length,
       owner,
+      viewer_has_saved,
     });
   } catch (error) {
     return res.status(500).json({ error: error.message });

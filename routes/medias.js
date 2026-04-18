@@ -4,6 +4,7 @@ const {
     createMedia,
     uploadMediaImage,
     getMedias,
+    getMyEntryByLookup,
     getTrendingMedia,
     deleteMedia,
     updateMedia,
@@ -99,6 +100,9 @@ router.get('/my-library', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
+// Current user's library entry for a given external title (auth-only; returns null if not in library)
+router.get('/mine-by-lookup', getMyEntryByLookup);
 
 //GET all media
 router.get('/', getMedias);

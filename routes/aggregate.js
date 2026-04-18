@@ -88,7 +88,7 @@ async function fetchSidebarData(userId) {
         { $addFields: { follower_count: { $size: { $ifNull: ['$followers', []] } } } },
         { $sort: { follower_count: -1 } },
         { $limit: 5 },
-        { $project: { username: 1, icon: 1, is_creator_badge: { $eq: ['$is_creator_badge', true] } } },
+        { $project: { username: 1, icon: 1, is_admin_badge: { $or: [{ $eq: ['$is_admin_badge', true] }, { $eq: ['$is_creator_badge', true] }] } } },
       ]);
 
       suggestionsCache.set(key, suggestions);
@@ -162,7 +162,7 @@ router.get('/home', limiter, requireAuth, async (req, res) => {
       if (cursor) query.created_at = { $lt: new Date(cursor) };
 
       const rawPosts = await Post.find(query)
-        .populate('author_id', 'username icon is_creator_badge')
+        .populate('author_id', 'username icon is_admin_badge is_creator_badge')
         .sort({ created_at: -1 })
         .limit(limit + 1)
         .lean();

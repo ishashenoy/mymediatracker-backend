@@ -4,6 +4,7 @@ const NOTIFICATION_TYPES = [
   'post_liked',
   'comment_liked',
   'post_commented',
+  'comment_replied',
   'new_follower',
 ];
 

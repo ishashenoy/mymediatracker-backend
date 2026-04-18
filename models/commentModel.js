@@ -12,6 +12,13 @@ const commentSchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  /** If set, this comment is a reply to another comment on the same post */
+  parent_comment_id: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Comment',
+    default: null,
+    index: true,
+  },
   body: {
     type: String,
     default: '',
@@ -35,5 +42,6 @@ const commentSchema = new mongoose.Schema({
 
 // Ascending for chronological thread display
 commentSchema.index({ post_id: 1, created_at: 1 });
+commentSchema.index({ post_id: 1, parent_comment_id: 1 });
 
 module.exports = mongoose.model('Comment', commentSchema);

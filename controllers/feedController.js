@@ -26,7 +26,7 @@ const getFeed = async (req, res) => {
     }
 
     const activities = await Feed.find(query)
-      .populate('user', 'username icon is_creator_badge')
+      .populate('user', 'username icon is_admin_badge is_creator_badge')
       .sort({ timestamp: -1 })
       .skip(skip)
       .limit(parsedLimit);

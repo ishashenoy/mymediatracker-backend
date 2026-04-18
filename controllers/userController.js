@@ -10,12 +10,21 @@ const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const bcrypt = require('bcrypt');
 const validator = require('validator');
-const { sanitizeText, sanitizeFeedbackMessage } = require('../utils/sanitize');
+const { sanitizeText, sanitizeFeedbackMessage, sanitizeIdentifier } = require('../utils/sanitize');
 const { ratingForApiResponse } = require('../utils/starRating');
 const Feedback = require('../models/feedbackModel');
 const { createNotification } = require('./notificationController');
 const { isAdminUser, isOwnerOrAdmin, canViewPrivateAccountContent } = require('../utils/privacy');
 const { scheduledPurgeAtFromNow, GRACE_DAYS, isAccountPendingDeletion } = require('../utils/accountDeletion');
+const { userHasAdminBadge } = require('../utils/adminBadge');
+const UserMedia = require('../models/userMediaModel');
+const {
+    sanitizeTimeZone,
+    dayKeyFromInstant,
+    startWeekdaySundayFirst,
+    daysInMonth,
+    monthTitleUpper,
+} = require('../utils/receiptCalendar');
 
 cloudinary.config({
     cloudinary_url: process.env.CLOUDINARY_URL
@@ -26,8 +35,6 @@ const createToken = (_id) => {
     return jwt.sign({_id}, process.env.SECRET, { expiresIn: '7d' })
 }
 
-const toCreatorBadge = (value) => value === true;
-
 const serializePublicUser = (user) => {
     if (!user) return null;
     return {
@@ -35,7 +42,7 @@ const serializePublicUser = (user) => {
         username: user.username,
         icon: user.icon || null,
         banner: user.banner || null,
-        is_creator_badge: toCreatorBadge(user.is_creator_badge),
+        is_admin_badge: userHasAdminBadge(user),
     };
 };
 
@@ -101,7 +108,7 @@ const getRequestingUserFromToken = async (req) => {
 
     try {
         const { _id } = jwt.verify(token, process.env.SECRET);
-        req.requestingUser = await User.findById(_id).select('_id username following role isAdmin is_admin is_creator_badge');
+        req.requestingUser = await User.findById(_id).select('_id username following role isAdmin is_admin is_admin_badge is_creator_badge');
     } catch (error) {
         req.requestingUser = null;
     }
@@ -154,7 +161,7 @@ const loginUser = async (req, res) => {
       token,
       icon: user.icon || null,
       banner: user.banner || null,
-      is_creator_badge: toCreatorBadge(user.is_creator_badge),
+      is_admin_badge: userHasAdminBadge(user),
       accountPendingDeletion: isAccountPendingDeletion(user),
       accountScheduledPurgeAt: user.account_scheduled_purge_at
         ? user.account_scheduled_purge_at.toISOString()
@@ -186,10 +193,10 @@ const getConnections = async (req, res) => {
 
     const [followerUsers, followingUsers] = await Promise.all([
         userFollowers.length
-            ? User.find({ username: { $in: userFollowers } }).select('username icon is_creator_badge').lean()
+            ? User.find({ username: { $in: userFollowers } }).select('username icon is_admin_badge is_creator_badge').lean()
             : [],
         userFollowing.length
-            ? User.find({ username: { $in: userFollowing } }).select('username icon is_creator_badge').lean()
+            ? User.find({ username: { $in: userFollowing } }).select('username icon is_admin_badge is_creator_badge').lean()
             : [],
     ]);
 
@@ -200,14 +207,14 @@ const getConnections = async (req, res) => {
         const doc = followersByUsername.get(uname);
         return doc
             ? serializePublicUser(doc)
-            : { username: uname, icon: null, is_creator_badge: false };
+            : { username: uname, icon: null, is_admin_badge: false };
     });
 
     const following = userFollowing.map((uname) => {
         const doc = followingByUsername.get(uname);
         return doc
             ? serializePublicUser(doc)
-            : { username: uname, icon: null, is_creator_badge: false };
+            : { username: uname, icon: null, is_admin_badge: false };
     });
 
     return res.status(200).json({followers, following});
@@ -319,10 +326,11 @@ const changeIcon = async (req, res) => {
         user.icon = result.secure_url;
         await user.save();
 
-        // Log upload to audit trail (fire-and-forget)
+        // Single UserUpload row per user icon (replace prior DB rows; Cloudinary id is unchanged)
         setImmediate(async () => {
             try {
                 const UserUpload = require('../models/userUploadModel');
+                await UserUpload.deleteMany({ user_id: user._id, resource_type: 'icon' });
                 await UserUpload.create({
                     user_id: user._id,
                     cloudinary_public_id: `icons/${user._id}`,
@@ -396,10 +404,11 @@ const changeBanner = async (req, res) => {
         user.banner = result.secure_url;
         await user.save();
 
-        // Log upload to audit trail (fire-and-forget)
+        // Single UserUpload row per user banner (replace prior DB rows; Cloudinary id is unchanged)
         setImmediate(async () => {
             try {
                 const UserUpload = require('../models/userUploadModel');
+                await UserUpload.deleteMany({ user_id: user._id, resource_type: 'banner' });
                 await UserUpload.create({
                     user_id: user._id,
                     cloudinary_public_id: `banners/${user._id}`,
@@ -438,14 +447,14 @@ const searchUsers = async (req, res) => {
                 { account_deletion_requested_at: { $exists: false } },
             ],
         })
-        .select('username icon private is_creator_badge')
+        .select('username icon private is_admin_badge is_creator_badge')
         .limit(20);
 
         const results = users.map(u => ({
             username: u.username,
             icon: u.icon || null,
             private: u.private,
-            is_creator_badge: toCreatorBadge(u.is_creator_badge),
+            is_admin_badge: userHasAdminBadge(u),
         }));
 
         return res.status(200).json(results);
@@ -577,7 +586,7 @@ const signupUser = async (req, res) => {
   try {
     const user = await User.signup(email, password, username);
     const token = createToken(user._id);
-    return res.status(200).json({ username, id: user._id.toString(), token });
+    return res.status(200).json({ username: user.username, id: user._id.toString(), token });
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
@@ -732,10 +741,11 @@ const getUserProfile = async (req, res) => {
             private: { $ne: true },
         });
 
+        // Profile never surfaces private lists (owners manage those on Media only).
         const userListsQuery = {
             user_id: user._id,
             archived: false,
-            ...(isOwnerOrAdminProfile ? {} : { private: { $ne: true } }),
+            private: { $ne: true },
         };
 
         const userLists = canViewPrivateContent
@@ -820,8 +830,11 @@ const getUserProfile = async (req, res) => {
                 username: user.username,
                 icon: user.icon,
                 banner: user.banner || null,
-                is_creator_badge: toCreatorBadge(user.is_creator_badge),
+                is_admin_badge: userHasAdminBadge(user),
                 bio: user.bio || '',
+                instagram: user.instagram_handle || '',
+                twitter: user.twitter_handle || '',
+                tiktok: user.tiktok_handle || '',
                 private: user.private,
                 created_at: user.createdAt
             },
@@ -945,7 +958,6 @@ const getMediaActivityHeatmap = async (req, res) => {
             return res.status(403).json({ error: 'This account is private.', code: 'PROFILE_PRIVATE' });
         }
 
-        const UserMedia = require('../models/userMediaModel');
         const Feed = require('../models/feedModel');
         const Post = require('../models/postModel');
         const Comment = require('../models/commentModel');
@@ -1171,6 +1183,37 @@ const updateBio = async (req, res) => {
     }
 };
 
+const updateSocialLinks = async (req, res) => {
+    const { username } = req.params;
+    const senderId = req.user._id;
+
+    try {
+        const user = await User.findOne({ username });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        if (!user._id.equals(senderId)) return res.status(401).json({ error: 'Not authorized' });
+
+        const igRaw = typeof req.body.instagram === 'string' ? req.body.instagram : '';
+        const twRaw = typeof req.body.twitter === 'string' ? req.body.twitter : '';
+        const ttRaw = typeof req.body.tiktok === 'string' ? req.body.tiktok : '';
+        const ig = sanitizeIdentifier(igRaw.replace(/^@+/, ''), { maxLen: 30 });
+        const tw = sanitizeIdentifier(twRaw.replace(/^@+/, ''), { maxLen: 15 });
+        const tt = sanitizeIdentifier(ttRaw.replace(/^@+/, ''), { maxLen: 24 });
+
+        user.instagram_handle = ig;
+        user.twitter_handle = tw;
+        user.tiktok_handle = tt;
+        await user.save();
+
+        return res.status(200).json({
+            instagram: user.instagram_handle,
+            twitter: user.twitter_handle,
+            tiktok: user.tiktok_handle,
+        });
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to update social links' });
+    }
+};
+
 const submitFeedback = async (req, res) => {
     const { message, category } = req.body || {};
     if (!message || typeof message !== 'string' || !message.trim()) {
@@ -1266,6 +1309,202 @@ const cancelAccountDeletion = async (req, res) => {
     }
 };
 
+/**
+ * Monthly calendar "star receipt": one top-rated cover per day (timezone-aware).
+ * Today prefers the latest rated title added that day; other days use best rating on activity date.
+ * Visibility matches profile library access (public or approved follower).
+ */
+const getStarReceipt = async (req, res) => {
+    try {
+        const { username } = req.params;
+        const tz = sanitizeTimeZone(req.query.tz);
+
+        const user = await User.findOne({ username }).select('_id username private followers account_deletion_requested_at').lean();
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const requestingUser = await getRequestingUserFromToken(req);
+        const isOwnerOrAdminProfile =
+            (requestingUser && requestingUser._id.toString() === user._id.toString()) || isAdminUser(requestingUser);
+
+        if (user.account_deletion_requested_at && !isOwnerOrAdminProfile) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        if (!canViewPrivateAccountContent(user, requestingUser)) {
+            return res.status(403).json({ error: 'This account is private.', code: 'PROFILE_PRIVATE' });
+        }
+
+        const now = new Date();
+        let year = parseInt(String(req.query.year || ''), 10);
+        let month = parseInt(String(req.query.month || ''), 10);
+        if (!Number.isFinite(year) || year < 2000 || year > 2100) {
+            const yPart = now.toLocaleDateString('en-CA', { timeZone: tz, year: 'numeric' });
+            year = parseInt(yPart, 10) || now.getUTCFullYear();
+        }
+        if (!Number.isFinite(month) || month < 1 || month > 12) {
+            const parts = now.toLocaleDateString('en-CA', { timeZone: tz }).split('-');
+            month = parseInt(parts[1], 10) || now.getUTCMonth() + 1;
+        }
+
+        const rangeStart = new Date(Date.UTC(year, month - 2, 1));
+        const rangeEnd = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
+
+        const lookupStages = [
+            {
+                $lookup: {
+                    from: 'uniquemedias',
+                    localField: 'unique_media_ref',
+                    foreignField: '_id',
+                    as: 'umDocs',
+                },
+            },
+            {
+                $addFields: {
+                    um: { $arrayElemAt: ['$umDocs', 0] },
+                },
+            },
+        ];
+
+        const ratedPipeline = [
+            { $match: { user_id: user._id } },
+            {
+                $addFields: {
+                    ratingNum: {
+                        $convert: { input: '$rating', to: 'double', onError: 0, onNull: 0 },
+                    },
+                    sortDate: { $ifNull: ['$finished_at', '$updatedAt'] },
+                },
+            },
+            { $match: { ratingNum: { $gte: 0.5 } } },
+            {
+                $match: {
+                    $or: [
+                        { sortDate: { $gte: rangeStart, $lte: rangeEnd } },
+                        { createdAt: { $gte: rangeStart, $lte: rangeEnd } },
+                    ],
+                },
+            },
+            ...lookupStages,
+        ];
+
+        /** Any row with createdAt in range — for “last added that day” when nothing rated maps. */
+        const addedPipeline = [
+            { $match: { user_id: user._id } },
+            {
+                $match: {
+                    createdAt: { $gte: rangeStart, $lte: rangeEnd },
+                },
+            },
+            {
+                $addFields: {
+                    ratingNum: {
+                        $convert: { input: '$rating', to: 'double', onError: 0, onNull: 0 },
+                    },
+                    sortDate: { $ifNull: ['$finished_at', '$updatedAt'] },
+                },
+            },
+            ...lookupStages,
+        ];
+
+        const [rowsRated, rowsAdded] = await Promise.all([
+            UserMedia.aggregate(ratedPipeline),
+            UserMedia.aggregate(addedPipeline),
+        ]);
+
+        const lastDay = daysInMonth(year, month);
+
+        const todayKey = dayKeyFromInstant(now, tz);
+
+        const mapDoc = (doc) => {
+            const sortKey = dayKeyFromInstant(doc.sortDate, tz);
+            const createdKey = dayKeyFromInstant(doc.createdAt, tz);
+            const um = doc.um || {};
+            const useCustom = Boolean(doc.use_custom_display) && String(doc.custom_name || '').trim().length > 0;
+            const name = useCustom ? doc.custom_name : (um.name || 'Unknown title');
+            const image_url =
+                useCustom && doc.custom_image_url ? doc.custom_image_url : (um.image_url || '');
+            return {
+                ...doc,
+                sortKey,
+                createdKey,
+                displayName: name,
+                displayImage: image_url || '',
+                displayType: um.type || '',
+                ratingNum: Number(doc.ratingNum) || 0,
+            };
+        };
+
+        const enrichedRated = rowsRated.map(mapDoc);
+        const enrichedAdded = rowsAdded.map(mapDoc);
+
+        const pickRatedForDay = (dayKey) => {
+            const rated = enrichedRated.filter((d) => Number(d.ratingNum) >= 0.5);
+            if (dayKey === todayKey) {
+                const addedToday = rated.filter((d) => d.createdKey === dayKey);
+                if (addedToday.length) {
+                    addedToday.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+                    return addedToday[0];
+                }
+            }
+            const bySort = rated.filter((d) => d.sortKey === dayKey);
+            if (!bySort.length) return null;
+            bySort.sort((a, b) => {
+                if (Number(b.ratingNum) !== Number(a.ratingNum)) {
+                    return Number(b.ratingNum) - Number(a.ratingNum);
+                }
+                return new Date(b.sortDate) - new Date(a.sortDate);
+            });
+            return bySort[0];
+        };
+
+        /** Most recently created library row on this calendar day (includes unrated). */
+        const pickLastAddedForDay = (dayKey) => {
+            const onDay = enrichedAdded.filter((d) => d.createdKey === dayKey);
+            if (!onDay.length) return null;
+            onDay.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+            return onDay[0];
+        };
+
+        const toDayPayload = (winner) => {
+            const hasRating = Number(winner.ratingNum) >= 0.5;
+            return {
+                name: winner.displayName,
+                image_url: winner.displayImage,
+                rating: hasRating ? ratingForApiResponse(winner.ratingNum) : null,
+                type: winner.displayType,
+            };
+        };
+
+        const days = {};
+        for (let d = 1; d <= lastDay; d += 1) {
+            const key = new Date(Date.UTC(year, month - 1, d, 12, 0, 0, 0)).toLocaleDateString('en-CA', {
+                timeZone: tz,
+            });
+            const ratedWinner = pickRatedForDay(key);
+            const winner = ratedWinner || pickLastAddedForDay(key);
+            days[key] = winner ? toDayPayload(winner) : null;
+        }
+
+        const startWeekday = startWeekdaySundayFirst(year, month, tz);
+
+        return res.status(200).json({
+            username: user.username,
+            year,
+            month,
+            monthTitle: monthTitleUpper(year, month),
+            timeZone: tz,
+            startWeekday,
+            daysInMonth: lastDay,
+            todayKey,
+            days,
+        });
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to load receipt' });
+    }
+};
+
 module.exports = {
     signupUser,
     loginUser,
@@ -1282,8 +1521,10 @@ module.exports = {
     resetPassword,
     updateOnboarding,
     updateBio,
+    updateSocialLinks,
     getMediaActivityHeatmap,
     submitFeedback,
     requestAccountDeletion,
     cancelAccountDeletion,
+    getStarReceipt,
 };

@@ -76,10 +76,42 @@ function sanitizeUrl(input, { maxLen = 2048 } = {}) {
   return s.slice(0, maxLen);
 }
 
+/** Signup / public handle: ASCII letters and digits only, lowercase, bounded length. */
+const USERNAME_MIN_LEN = 3;
+const USERNAME_MAX_LEN = 30;
+
+/**
+ * @returns {{ ok: true, username: string } | { ok: false, error: string }}
+ */
+function validateUsernameShape(raw) {
+  const u = String(raw ?? '')
+    .trim()
+    .toLowerCase();
+  if (!u) {
+    return { ok: false, error: 'Username is required' };
+  }
+  if (u.length < USERNAME_MIN_LEN || u.length > USERNAME_MAX_LEN) {
+    return {
+      ok: false,
+      error: `Username must be ${USERNAME_MIN_LEN}-${USERNAME_MAX_LEN} characters`,
+    };
+  }
+  if (!/^[a-z0-9]+$/.test(u)) {
+    return {
+      ok: false,
+      error: 'Username may only contain letters and numbers (no spaces or symbols)',
+    };
+  }
+  return { ok: true, username: u };
+}
+
 module.exports = {
   sanitizeText,
   sanitizeFeedbackMessage,
   sanitizeIdentifier,
   sanitizeUrl,
+  validateUsernameShape,
+  USERNAME_MIN_LEN,
+  USERNAME_MAX_LEN,
 };
 
