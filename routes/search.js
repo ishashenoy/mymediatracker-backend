@@ -1,6 +1,5 @@
 const express = require('express');
 const requireAuth = require('../middleware/requireAuth');
-const UniqueMedia = require('../models/uniqueMediaModel');
 const router = express.Router();
 
 const rateLimit = require('express-rate-limit');
@@ -97,20 +96,6 @@ router.get('/all/:title', requireAuth, async function(req, res) {
     };
 
     const fetchJobs = [];
-    const escapedSearch = searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const userAddedSearchJob = UniqueMedia.find({
-        type: { $in: activeTypes },
-        $or: [
-            { normalized_name: { $regex: `^${escapedSearch}`, $options: 'i' } },
-            { normalized_name: { $regex: escapedSearch, $options: 'i' } },
-            { name: { $regex: escapedSearch, $options: 'i' } },
-        ],
-    })
-        .select('_id name image_url type source media_id score normalized_name')
-        .limit(40)
-        .lean()
-        .then(rows => ({ kind: 'internal', rows }))
-        .catch(() => ({ kind: 'internal', rows: [] }));
     if (activeTypes.includes('anime')) {
         fetchJobs.push(
             fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(title)}&sfw=true&limit=20`, { signal: abortCont.signal })
@@ -162,7 +147,7 @@ router.get('/all/:title', requireAuth, async function(req, res) {
     }
 
     try {
-        const settled = await Promise.allSettled([userAddedSearchJob, ...fetchJobs]);
+        const settled = await Promise.allSettled(fetchJobs);
         clearTimeout(timeout);
 
         // Normalize and combine all results with relevance scoring
@@ -173,20 +158,7 @@ router.get('/all/:title', requireAuth, async function(req, res) {
             const { kind, rows } = entry.value;
             if (!Array.isArray(rows)) return;
 
-            if (kind === 'internal') {
-                rows.forEach((item) => {
-                    const name = item.name || '';
-                    allResults.push({
-                        id: item.media_id?.toString() || item._id?.toString() || '',
-                        name,
-                        image_url: item.image_url || null,
-                        type: item.type || '',
-                        source: item.source || 'internal',
-                        relevance: getRelevanceScore(name, searchQuery),
-                        raw: item,
-                    });
-                });
-            } else if (kind === 'anime') {
+            if (kind === 'anime') {
                 rows.forEach(item => {
                     const name = item.title_english || item.title || '';
                     allResults.push({
