@@ -100,6 +100,25 @@ function serializeUserMedia(doc) {
     };
 }
 
+function serializeInternalMediaDetails(uniqueMediaDoc, creatorDoc, viewerId) {
+    if (!uniqueMediaDoc) return null;
+    const creatorId = uniqueMediaDoc.created_by ? String(uniqueMediaDoc.created_by) : '';
+    return {
+        _id: uniqueMediaDoc._id,
+        type: uniqueMediaDoc.type || '',
+        source: uniqueMediaDoc.source || 'internal',
+        media_id: uniqueMediaDoc.media_id || '',
+        title: uniqueMediaDoc.name || '',
+        cover_image_url: uniqueMediaDoc.image_url || '',
+        header_image_url: uniqueMediaDoc.header_image_url || '',
+        description: uniqueMediaDoc.description || '',
+        created_by: creatorId || null,
+        creator_username: creatorDoc?.username || '',
+        creator_display_name: creatorDoc?.displayName || creatorDoc?.username || '',
+        can_edit: Boolean(viewerId && creatorId && String(viewerId) === creatorId),
+    };
+}
+
 async function findPotentialUniqueMatches({ name, type, limit = 8 }) {
     const cleanName = String(name || "").trim();
     const cleanType = String(type || "").trim();
@@ -137,6 +156,7 @@ async function findOrCreateUniqueMedia({
     source,
     media_id,
     score,
+    created_by,
 }) {
     const cleanSource = String(source || "").trim();
     const cleanMediaId = String(media_id || "").trim();
@@ -167,6 +187,7 @@ async function findOrCreateUniqueMedia({
                 name: cleanName,
                 normalized_name: normalizeName(cleanName),
                 image_url: cleanImage,
+                ...(cleanSource === "internal" && created_by ? { created_by } : {}),
                 ...(score !== undefined && score !== null && score !== "" ? { score } : {}),
             });
         }
@@ -185,6 +206,7 @@ async function findOrCreateUniqueMedia({
                 name: cleanName,
                 normalized_name: normalizeName(cleanName),
                 image_url: cleanImage,
+                ...(cleanSource === "internal" && created_by ? { created_by } : {}),
                 ...(cleanSource ? { source: cleanSource } : {}),
                 ...(cleanMediaId ? { media_id: cleanMediaId } : {}),
                 ...(score !== undefined && score !== null && score !== "" ? { score } : {}),
@@ -522,6 +544,8 @@ const createMedia = async (req, res) => {
         use_custom_display,
         custom_name,
         custom_image_url,
+        header_image_url,
+        description,
         listId,
         // Tier 2 fields
         format,
@@ -543,6 +567,8 @@ const createMedia = async (req, res) => {
     const safeCustomName = custom_name !== undefined ? sanitizeText(custom_name, { maxLen: 200, allowNewlines: false }) : undefined;
     const safeCustomImageUrl = custom_image_url !== undefined ? sanitizeUrl(custom_image_url) : undefined;
     const safeReviewText = review_text !== undefined ? sanitizeText(review_text, { maxLen: 2000, allowNewlines: true }) : undefined;
+    const safeHeaderImageUrl = header_image_url !== undefined ? sanitizeUrl(header_image_url) : undefined;
+    const safeDescription = description !== undefined ? sanitizeText(description, { maxLen: 2000, allowNewlines: true }) : undefined;
     const safeSourceOfDiscovery = source_of_discovery !== undefined ? sanitizeText(source_of_discovery, { maxLen: 120, allowNewlines: false }) : undefined;
     const safePlatform = platform !== undefined ? sanitizeText(platform, { maxLen: 80, allowNewlines: false }) : undefined;
     const safeFormat = format !== undefined ? sanitizeText(format, { maxLen: 80, allowNewlines: false }) : undefined;
@@ -604,7 +630,17 @@ const createMedia = async (req, res) => {
                 source: finalSource,
                 media_id: finalMediaId,
                 score,
+                created_by: user_id,
             });
+
+            if (String(finalSource).toLowerCase() === "internal") {
+                const internalUpdates = {};
+                if (safeHeaderImageUrl !== undefined) internalUpdates.header_image_url = safeHeaderImageUrl;
+                if (safeDescription !== undefined) internalUpdates.description = safeDescription;
+                if (Object.keys(internalUpdates).length > 0) {
+                    await UniqueMedia.findByIdAndUpdate(uniqueMedia._id, internalUpdates);
+                }
+            }
         }
 
         const shouldUseCustomDisplay = matched_unique_media_id
@@ -681,6 +717,96 @@ const createMedia = async (req, res) => {
     } catch (error) {
         console.error("Error in createMedia:", error);
         res.status(400).json({ error: error.message });
+    }
+};
+
+// GET internal media details by unique lookup (source=internal)
+const getInternalMediaDetails = async (req, res) => {
+    try {
+        const type = String(req.query.type || "").trim();
+        const source = String(req.query.source || "").trim().toLowerCase();
+        const media_id = String(req.query.media_id || "").trim();
+
+        if (!type || !source || !media_id) {
+            return res.status(400).json({ error: "type, source, and media_id are required" });
+        }
+        if (source !== "internal") {
+            return res.status(400).json({ error: "Only internal source is supported on this route" });
+        }
+
+        const uniqueMedia = await UniqueMedia.findOne({ type, source, media_id })
+            .select("_id type source media_id name image_url header_image_url description created_by")
+            .lean();
+
+        if (!uniqueMedia) {
+            return res.status(404).json({ error: "Media not found" });
+        }
+
+        let creator = null;
+        if (uniqueMedia.created_by) {
+            creator = await User.findById(uniqueMedia.created_by).select("username displayName").lean();
+        }
+
+        return res.status(200).json({
+            media: serializeInternalMediaDetails(uniqueMedia, creator, req.user?._id || null),
+        });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+};
+
+// PATCH internal media details (creator only)
+const updateInternalMediaDetails = async (req, res) => {
+    try {
+        const user_id = req.user?._id;
+        const { uniqueMediaId } = req.params;
+
+        if (!mongoose.Types.ObjectId.isValid(uniqueMediaId)) {
+            return res.status(404).json({ error: "Media does not exist." });
+        }
+
+        const uniqueMedia = await UniqueMedia.findById(uniqueMediaId).select(
+            "_id type source media_id name image_url header_image_url description created_by"
+        );
+        if (!uniqueMedia || String(uniqueMedia.source || "").toLowerCase() !== "internal") {
+            return res.status(404).json({ error: "Media does not exist." });
+        }
+
+        if (!uniqueMedia.created_by || String(uniqueMedia.created_by) !== String(user_id)) {
+            return res.status(403).json({ error: "Only the creator can edit this media." });
+        }
+
+        const incoming = req.body || {};
+        const updates = {};
+
+        if (incoming.title !== undefined) {
+            updates.name = sanitizeText(incoming.title, { maxLen: 200, allowNewlines: false });
+        }
+        if (incoming.cover_image_url !== undefined) {
+            updates.image_url = sanitizeUrl(incoming.cover_image_url);
+        }
+        if (incoming.header_image_url !== undefined) {
+            updates.header_image_url = sanitizeUrl(incoming.header_image_url);
+        }
+        if (incoming.description !== undefined) {
+            updates.description = sanitizeText(incoming.description, { maxLen: 2000, allowNewlines: true });
+        }
+
+        if (Object.keys(updates).length === 0) {
+            return res.status(400).json({ error: "No updates provided." });
+        }
+
+        const updated = await UniqueMedia.findByIdAndUpdate(uniqueMediaId, updates, { new: true })
+            .select("_id type source media_id name image_url header_image_url description created_by")
+            .lean();
+
+        const creator = await User.findById(updated.created_by).select("username displayName").lean();
+
+        return res.status(200).json({
+            media: serializeInternalMediaDetails(updated, creator, user_id),
+        });
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
     }
 };
 
@@ -1032,8 +1158,10 @@ module.exports = {
     getTrendingMedia,
     getMedias,
     getMyEntryByLookup,
+    getInternalMediaDetails,
     deleteMedia,
     updateMedia,
+    updateInternalMediaDetails,
     importMedia,
     suggestMediaMatches,
     findOrCreateUniqueMedia,

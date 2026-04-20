@@ -32,6 +32,21 @@ const uniqueMediaSchema = new mongoose.Schema(
             default: '',
             index: true,
         },
+        header_image_url: {
+            type: String,
+            default: '',
+        },
+        description: {
+            type: String,
+            default: '',
+            trim: true,
+        },
+        created_by: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'User',
+            default: null,
+            index: true,
+        },
         score: {
             type: mongoose.Schema.Types.Mixed,
             required: false,

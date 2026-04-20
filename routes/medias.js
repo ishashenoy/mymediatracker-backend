@@ -6,8 +6,10 @@ const {
     getMedias,
     getMyEntryByLookup,
     getTrendingMedia,
+    getInternalMediaDetails,
     deleteMedia,
     updateMedia,
+    updateInternalMediaDetails,
     importMedia,
     suggestMediaMatches
 } = require('../controllers/mediaController')
@@ -40,6 +42,7 @@ router.get('/trending', getTrendingMedia);
 
 // suggest media matches (global search, no auth required)
 router.get('/matches', suggestMediaMatches);
+router.get('/details', getInternalMediaDetails);
 
 //require auth for all media routes
 router.use(requireAuth);
@@ -125,6 +128,8 @@ router.post('/upload-image', maintenanceMode, (req, res, next) => {
 
 //DELETE a media
 router.delete('/:id', maintenanceMode, deleteMedia);
+
+router.patch('/details/:uniqueMediaId', maintenanceMode, updateInternalMediaDetails);
 
 //UPDATE a media
 router.patch('/:id', maintenanceMode, updateMedia);
