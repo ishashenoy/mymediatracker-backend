@@ -15,6 +15,7 @@ const {
   uploadPostImageBuffer,
   isTrustedImageUrl,
 } = require('../utils/postImageUpload');
+const { VALID_POST_TAGS, buildFeedPostQuery } = require('../utils/feedPostQuery');
 
 function normalizeEmbeddedImages(raw) {
   if (!raw) return [];
@@ -58,8 +59,7 @@ const createPost = async (req, res) => {
   const safeEmbedded = normalizeEmbeddedImages(embedded_images);
   const safeSessionId = session_id ? sanitizeIdentifier(session_id, { maxLen: 80 }) : null;
 
-  const VALID_TAGS = ['review', 'question', 'recommendation', 'discussion', 'rant'];
-  if (tag && !VALID_TAGS.includes(tag)) {
+  if (tag && !VALID_POST_TAGS.includes(tag)) {
     return res.status(400).json({ error: 'Invalid tag.' });
   }
 
@@ -70,8 +70,8 @@ const createPost = async (req, res) => {
 
   // Validate poll if provided
   if (poll) {
-    if (!Array.isArray(poll.options) || poll.options.length < 2 || poll.options.length > 4) {
-      return res.status(400).json({ error: 'Poll must have between 2 and 4 options.' });
+    if (!Array.isArray(poll.options) || poll.options.length < 2 || poll.options.length > 6) {
+      return res.status(400).json({ error: 'Poll must have between 2 and 6 options.' });
     }
     for (const opt of poll.options) {
       const safeOpt = sanitizeText(opt, { maxLen: 100, allowNewlines: false });
@@ -99,7 +99,7 @@ const createPost = async (req, res) => {
     const postData = {
       author_id: userId,
       body: safeBody,
-      tag: (tag && VALID_TAGS.includes(tag)) ? tag : null,
+      tag: (tag && VALID_POST_TAGS.includes(tag)) ? tag : null,
     };
 
     if (safeEmbedded.length > 0) {
@@ -199,13 +199,16 @@ const deletePost = async (req, res) => {
 // ─── Get Feed Posts (cursor-based pagination) ───────────────────────────────
 
 const getFeedPosts = async (req, res) => {
-  const { cursor, limit: limitParam = 20 } = req.query;
+  const { cursor, limit: limitParam = 20, tag } = req.query;
   const userId = req.user._id;
   const limit = Math.min(parseInt(limitParam, 10) || 20, 50);
 
   try {
-    const query = {};
-    if (cursor) query.created_at = { $lt: new Date(cursor) };
+    const built = buildFeedPostQuery({ cursor, tag });
+    if (built.error) {
+      return res.status(400).json({ error: built.error });
+    }
+    const { query } = built;
 
     const rawPosts = await Post.find(query)
       .populate('author_id', 'username icon is_admin_badge is_creator_badge')

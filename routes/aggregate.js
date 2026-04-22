@@ -11,6 +11,8 @@ const UserMedia = require('../models/userMediaModel');
 const User = require('../models/userModel');
 const List = require('../models/listModel');
 
+const { buildFeedPostQuery } = require('../utils/feedPostQuery');
+
 const limiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   max: 200,
@@ -151,17 +153,20 @@ async function fetchSidebarData(userId) {
 // Only use this endpoint for the initial (no-cursor) page load — subsequent
 // "load more" requests should hit /api/posts/feed directly.
 router.get('/home', limiter, requireAuth, async (req, res) => {
-  const { cursor, limit: limitParam = 20 } = req.query;
+  const { cursor, limit: limitParam = 20, tag } = req.query;
   const userId = req.user._id;
   const limit = Math.min(parseInt(limitParam, 10) || 20, 50);
+
+  const feedQueryBuilt = buildFeedPostQuery({ cursor, tag });
+  if (feedQueryBuilt.error) {
+    return res.status(400).json({ error: feedQueryBuilt.error });
+  }
+  const { query: feedMongoQuery } = feedQueryBuilt;
 
   try {
     // Feed (not cached — user-specific and cursor-paginated)
     const feedPromise = (async () => {
-      const query = {};
-      if (cursor) query.created_at = { $lt: new Date(cursor) };
-
-      const rawPosts = await Post.find(query)
+      const rawPosts = await Post.find(feedMongoQuery)
         .populate('author_id', 'username icon is_admin_badge is_creator_badge')
         .sort({ created_at: -1 })
         .limit(limit + 1)
