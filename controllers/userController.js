@@ -161,6 +161,7 @@ const loginUser = async (req, res) => {
       token,
       icon: user.icon || null,
       banner: user.banner || null,
+      hide_explicit_covers: user.hide_explicit_covers !== false,
       is_admin_badge: userHasAdminBadge(user),
       accountPendingDeletion: isAccountPendingDeletion(user),
       accountScheduledPurgeAt: user.account_scheduled_purge_at
@@ -586,7 +587,12 @@ const signupUser = async (req, res) => {
   try {
     const user = await User.signup(email, password, username);
     const token = createToken(user._id);
-    return res.status(200).json({ username: user.username, id: user._id.toString(), token });
+    return res.status(200).json({
+        username: user.username,
+        id: user._id.toString(),
+        token,
+        hide_explicit_covers: user.hide_explicit_covers !== false,
+    });
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
@@ -836,6 +842,7 @@ const getUserProfile = async (req, res) => {
                 twitter: user.twitter_handle || '',
                 tiktok: user.tiktok_handle || '',
                 private: user.private,
+                hide_explicit_covers: user.hide_explicit_covers !== false,
                 created_at: user.createdAt
             },
             connections: detailedConnections,
@@ -879,11 +886,16 @@ const updateOnboarding = async (req, res) => {
         if (!user) return res.status(404).json({ error: 'User not found.' });
         if (!user._id.equals(senderId)) return res.status(401).json({ error: 'Not authorized.' });
 
-        const { onboarding_selections } = req.body;
+        const { onboarding_selections, hide_explicit_covers } = req.body;
         if (!Array.isArray(onboarding_selections)) {
             return res.status(400).json({ error: 'onboarding_selections must be an array.' });
         }
 
+        if (typeof hide_explicit_covers !== 'boolean') {
+            return res.status(400).json({ error: 'hide_explicit_covers must be a boolean.' });
+        }
+
+        user.hide_explicit_covers = hide_explicit_covers;
         user.onboarding_selections = onboarding_selections;
         await user.save();
 

@@ -75,6 +75,10 @@ const userSchema = new Schema({
         type: Number,
         default: null,
     },
+    hide_explicit_covers: {
+        type: Boolean,
+        default: true,
+    },
     // ISO 3166-1 alpha-2 country code, e.g. 'US', 'IN'
     country: {
         type: String,

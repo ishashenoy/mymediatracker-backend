@@ -1,5 +1,6 @@
 const express = require('express');
 const requireAuth = require('../middleware/requireAuth');
+const User = require('../models/userModel');
 const router = express.Router();
 
 const rateLimit = require('express-rate-limit');
@@ -12,7 +13,7 @@ const limiter = rateLimit({
 
 router.use(limiter);
 
-const UNIFIED_MEDIA_TYPES = ['anime', 'manga', 'tv', 'movie', 'book', 'game', 'music'];
+const UNIFIED_MEDIA_TYPES = ['anime', 'manga', 'tv', 'movie', 'book', 'game', 'music', 'web-video'];
 const ALL_SEARCHABLE_TYPES = [...UNIFIED_MEDIA_TYPES, 'web-video'];
 
 // Unified search across all media types - sorted by title relevance
@@ -20,6 +21,13 @@ const ALL_SEARCHABLE_TYPES = [...UNIFIED_MEDIA_TYPES, 'web-video'];
 router.get('/all/:title', requireAuth, async function(req, res) {
     const { title } = req.params;
     const searchQuery = title.toLowerCase().trim();
+    let shouldForceSfwMal = false;
+    try {
+        const requester = await User.findById(req.user._id).select('hide_explicit_covers').lean();
+        shouldForceSfwMal = requester?.hide_explicit_covers !== false;
+    } catch (e) {
+        shouldForceSfwMal = false;
+    }
     const rawType = String(req.query.type || 'all').toLowerCase().trim();
     let activeTypes = ALL_SEARCHABLE_TYPES;
     if (rawType !== 'all') {
@@ -97,15 +105,25 @@ router.get('/all/:title', requireAuth, async function(req, res) {
 
     const fetchJobs = [];
     if (activeTypes.includes('anime')) {
+        const animeQuery = new URLSearchParams({
+            q: title,
+            limit: '20',
+            ...(shouldForceSfwMal ? { sfw: 'true' } : {}),
+        }).toString();
         fetchJobs.push(
-            fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(title)}&sfw=true&limit=20`, { signal: abortCont.signal })
+            fetch(`https://api.jikan.moe/v4/anime?${animeQuery}`, { signal: abortCont.signal })
                 .then(r => r.ok ? r.json() : { data: [] })
                 .then(j => ({ kind: 'anime', rows: j.data || [] }))
         );
     }
     if (activeTypes.includes('manga')) {
+        const mangaQuery = new URLSearchParams({
+            q: title,
+            limit: '20',
+            ...(shouldForceSfwMal ? { sfw: 'true' } : {}),
+        }).toString();
         fetchJobs.push(
-            fetch(`https://api.jikan.moe/v4/manga?q=${encodeURIComponent(title)}&limit=20`, { signal: abortCont.signal })
+            fetch(`https://api.jikan.moe/v4/manga?${mangaQuery}`, { signal: abortCont.signal })
                 .then(r => r.ok ? r.json() : { data: [] })
                 .then(j => ({ kind: 'manga', rows: j.data || [] }))
         );
@@ -143,6 +161,16 @@ router.get('/all/:title', requireAuth, async function(req, res) {
             fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(title)}&media=music&entity=song&limit=20`, { signal: abortCont.signal })
                 .then(r => r.ok ? r.json() : { results: [] })
                 .then(j => ({ kind: 'music', rows: j.results || [] }))
+        );
+    }
+    if (activeTypes.includes('web-video')) {
+        fetchJobs.push(
+            fetch(
+                `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=20&q=${encodeURIComponent(title)}&key=${process.env.YOUTUBE_API_KEY}`,
+                { signal: abortCont.signal }
+            )
+                .then(r => r.ok ? r.json() : { items: [] })
+                .then(j => ({ kind: 'web-video', rows: j.items || [] }))
         );
     }
 
@@ -255,6 +283,26 @@ router.get('/all/:title', requireAuth, async function(req, res) {
                         raw: item
                     });
                 });
+            } else if (kind === 'web-video') {
+                rows.forEach(item => {
+                    const videoId = item?.id?.videoId || '';
+                    const snippet = item?.snippet || {};
+                    const name = snippet.title || '';
+                    const imageUrl =
+                        snippet?.thumbnails?.high?.url
+                        || snippet?.thumbnails?.medium?.url
+                        || snippet?.thumbnails?.default?.url
+                        || null;
+                    allResults.push({
+                        id: videoId,
+                        name,
+                        image_url: imageUrl,
+                        type: 'web-video',
+                        source: 'youtube',
+                        relevance: getRelevanceScore(name, searchQuery),
+                        raw: item
+                    });
+                });
             }
         });
 
@@ -303,6 +351,28 @@ router.get('/all/:title', requireAuth, async function(req, res) {
             return res.status(504).json({ error: 'Search request timed out' });
         }
         return res.status(500).json({ error: error.message || 'Failed to perform unified search' });
+    }
+});
+
+// Fetching details for a specific YouTube video
+router.get('/youtube/details/:id', requireAuth, async function(req, res){
+    const { id } = req.params;
+    const baseUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${encodeURIComponent(id)}&key=${process.env.YOUTUBE_API_KEY}`;
+
+    try {
+        const response = await fetch(baseUrl);
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`YouTube API error: ${response.status} - ${errorText}`);
+        }
+        const json = await response.json();
+        const item = (json.items || [])[0] || null;
+        if (!item) {
+            return res.status(404).json({ error: "Video not found" });
+        }
+        return res.status(200).json(item);
+    } catch (error) {
+        return res.status(500).json({ error: error.message || "Failed to fetch YouTube details" });
     }
 });
 
