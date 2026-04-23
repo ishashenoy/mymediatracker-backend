@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken');
+const multer = require('multer');
+const cloudinary = require('cloudinary').v2;
 const List = require('../models/listModel');
 const ListItem = require('../models/listItemModel');
 const UserMedia = require('../models/userMediaModel');
@@ -12,8 +14,10 @@ const requireAuth = require('../middleware/requireAuth');
 const { findOrCreateUniqueMedia } = require('../controllers/mediaController');
 const { fireEvent } = require('../controllers/eventsController');
 const { sanitizeText, sanitizeUrl } = require('../utils/sanitize');
+const { resolveNewListItemSectionAndPosition } = require('../utils/listItemPlacement');
 const { isAdminUser, isOwnerOrAdmin, canViewPrivateAccountContent } = require('../utils/privacy');
 const { userHasAdminBadge } = require('../utils/adminBadge');
+const { IMAGE_TRANSFORMS } = require('../utils/imageTransformProfiles');
 
 // Set privacy for a list
 router.put('/:listId/privacy', requireAuth, async (req, res) => {
@@ -75,17 +79,18 @@ router.put('/reorder', requireAuth, async (req, res) => {
   }
 });
 
-// Reorder items within a list for the authenticated owner
+// Reorder items within a list for the authenticated owner.
+// Supported bodies:
+// - { itemIds: string[] } applies a full reorder
+// - { placements: [{ id, position }] } applies a partial or full reorder
+// All list items are flat (section_id is always null).
 router.put('/:listId/items/reorder', requireAuth, async (req, res) => {
   const { listId } = req.params;
-  const { itemIds } = req.body;
+  const { itemIds, placements } = req.body;
   const user_id = req.user._id;
 
   if (!mongoose.Types.ObjectId.isValid(listId)) {
     return res.status(400).json({ error: 'Invalid listId.' });
-  }
-  if (!Array.isArray(itemIds) || itemIds.length === 0) {
-    return res.status(400).json({ error: 'itemIds must be a non-empty array.' });
   }
 
   try {
@@ -95,8 +100,47 @@ router.put('/:listId/items/reorder', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized.' });
     }
 
-    const listItems = await ListItem.find({ list_id: listId }).select('_id');
+    const listItems = await ListItem.find({ list_id: listId }).select('_id section_id');
     const listItemIdSet = new Set(listItems.map((item) => item._id.toString()));
+
+    if (Array.isArray(placements) && placements.length > 0) {
+      const seen = new Set();
+
+      for (const p of placements) {
+        const id = p?.id != null ? String(p.id) : '';
+        if (!id || !listItemIdSet.has(id)) {
+          return res.status(400).json({ error: 'Each placement must reference a list item in this list.' });
+        }
+        if (seen.has(id)) {
+          return res.status(400).json({ error: 'Duplicate list item in placements.' });
+        }
+        seen.add(id);
+        const pos = p.position;
+        if (typeof pos !== 'number' || !Number.isFinite(pos) || pos < 0) {
+          return res.status(400).json({ error: 'Each placement needs a non-negative numeric position.' });
+        }
+      }
+
+      await Promise.all(
+        placements.map((p) =>
+          ListItem.updateOne(
+            { _id: p.id, list_id: listId },
+            {
+              $set: {
+                position: p.position,
+                section_id: null,
+              },
+            }
+          )
+        )
+      );
+
+      return res.status(200).json({ message: 'List item order updated.' });
+    }
+
+    if (!Array.isArray(itemIds) || itemIds.length === 0) {
+      return res.status(400).json({ error: 'itemIds or placements must be provided.' });
+    }
 
     if (listItemIdSet.size !== itemIds.length || itemIds.some((id) => !listItemIdSet.has(String(id)))) {
       return res.status(400).json({ error: 'itemIds must include all and only items in this list.' });
@@ -106,7 +150,7 @@ router.put('/:listId/items/reorder', requireAuth, async (req, res) => {
       itemIds.map((itemId, index) =>
         ListItem.updateOne(
           { _id: itemId, list_id: listId },
-          { $set: { position: index } }
+          { $set: { position: index, section_id: null } }
         )
       )
     );
@@ -117,6 +161,26 @@ router.put('/:listId/items/reorder', requireAuth, async (req, res) => {
   }
 });
 
+// Sublists/sections are disabled.
+router.post('/:listId/sections', requireAuth, async (req, res) => {
+  return res.status(410).json({ error: 'Sublists are no longer supported.' });
+});
+
+// Sublists/sections are disabled.
+router.patch('/:listId/sections/:sectionId', requireAuth, async (req, res) => {
+  return res.status(410).json({ error: 'Sublists are no longer supported.' });
+});
+
+// Sublists/sections are disabled.
+router.put('/:listId/sections/reorder', requireAuth, async (req, res) => {
+  return res.status(410).json({ error: 'Sublists are no longer supported.' });
+});
+
+// Sublists/sections are disabled.
+router.delete('/:listId/sections/:sectionId', requireAuth, async (req, res) => {
+  return res.status(410).json({ error: 'Sublists are no longer supported.' });
+});
+
 const rateLimit = require('express-rate-limit');
 
 const limiter = rateLimit({
@@ -124,6 +188,28 @@ const limiter = rateLimit({
   max: 200, // 100 requests per window
   message: "Too many requests. Try again later."
 });
+
+cloudinary.config({
+  cloudinary_url: process.env.CLOUDINARY_URL,
+});
+
+const coverUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!file?.mimetype?.startsWith('image/')) {
+      return cb(new Error('Only image files are allowed'));
+    }
+    return cb(null, true);
+  },
+});
+
+const getCloudinaryPublicIdFromUrl = (url) => {
+  const value = String(url || '').trim();
+  if (!value.includes('res.cloudinary.com')) return null;
+  const match = value.match(/\/upload\/(?:v\d+\/)?(.+)\.[^.?#/]+(?:[?#].*)?$/i);
+  return match?.[1] || null;
+};
 
 const ensureListOwner = async (listId, userId) => {
   const list = await List.findById(listId);
@@ -167,9 +253,10 @@ const getRequestingUser = async (req) => {
 
 // Create a new custom list
 router.post('/', requireAuth, async (req, res) => {
-  const { name, private: isPrivate } = req.body;
+  const { name, private: isPrivate, cover_image_url } = req.body;
   const user_id = req.user._id;
   const safeName = sanitizeText(name, { maxLen: 80, allowNewlines: false });
+  const safeCoverImageUrl = sanitizeUrl(cover_image_url);
   if (!safeName || !user_id) {
     return res.status(400).json({ error: 'List name required.' });
   }
@@ -180,10 +267,86 @@ router.post('/', requireAuth, async (req, res) => {
       user_id,
       name: safeName,
       private: Boolean(isPrivate),
+      cover_image_url: safeCoverImageUrl,
       position: nextPosition,
     });
     await newList.save();
     return res.status(201).json({ list: newList });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Set or clear list cover image
+router.put('/:listId/cover', requireAuth, (req, res, next) => {
+  coverUpload.single('image')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'Image too large. Max size is 5MB.' });
+      }
+      return res.status(400).json({ error: err.message || 'Invalid image upload.' });
+    }
+    return next();
+  });
+}, async (req, res) => {
+  const { listId } = req.params;
+  const { cover_image_url } = req.body;
+  const user_id = req.user._id;
+
+  if (!mongoose.Types.ObjectId.isValid(listId)) {
+    return res.status(400).json({ error: 'Invalid listId.' });
+  }
+
+  if (!req.file && cover_image_url !== null && cover_image_url !== undefined && typeof cover_image_url !== 'string') {
+    return res.status(400).json({ error: 'cover_image_url must be a string or null.' });
+  }
+
+  try {
+    const list = await List.findById(listId);
+    if (!list) return res.status(404).json({ error: 'List not found.' });
+    if (list.user_id.toString() !== user_id.toString()) {
+      return res.status(403).json({ error: 'Not authorized.' });
+    }
+
+    const previousPublicId = getCloudinaryPublicIdFromUrl(list.cover_image_url);
+
+    if (req.file?.buffer) {
+      const uploaded = await new Promise((resolve, reject) => {
+        cloudinary.uploader.upload_stream(
+          {
+            public_id: `list-covers/${list._id}`,
+            overwrite: true,
+            format: 'webp',
+            transformation: IMAGE_TRANSFORMS.listCover,
+          },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+          }
+        ).end(req.file.buffer);
+      });
+      list.cover_image_url = uploaded?.secure_url || null;
+    } else {
+      const sanitizedUrl = sanitizeUrl(cover_image_url);
+      list.cover_image_url = sanitizedUrl;
+
+      const shouldDestroyOldCloudinaryCover = (cover_image_url === null) || (
+        sanitizedUrl
+        && previousPublicId
+        && !String(sanitizedUrl).includes('/upload/')
+      );
+
+      if (shouldDestroyOldCloudinaryCover && previousPublicId) {
+        await cloudinary.uploader.destroy(previousPublicId, { resource_type: 'image' }).catch(() => {});
+      }
+    }
+
+    await list.save();
+
+    return res.status(200).json({
+      message: list.cover_image_url ? 'List cover updated.' : 'List cover cleared.',
+      cover_image_url: list.cover_image_url,
+    });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
@@ -333,12 +496,12 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
     // Create ListItem (ignore duplicate errors)
     let createdListItem = null;
     try {
-      const lastItem = await ListItem.findOne({ list_id: listId }).sort({ position: -1 }).select('position');
-      const nextPosition = typeof lastItem?.position === 'number' ? lastItem.position + 1 : 0;
+      const { position: nextPosition } = await resolveNewListItemSectionAndPosition(listId);
       createdListItem = await ListItem.create({
         list_id: listId,
         user_id,
         user_media_id: userMedia._id,
+        section_id: null,
         position: nextPosition,
       });
     } catch (err) {
@@ -358,6 +521,7 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
       userMediaId: userMedia._id,
       listItemId: createdListItem?._id,
       position: createdListItem?.position,
+      section_id: null,
     });
   } catch (error) {
     return res.status(500).json({ error: error.message });
@@ -747,7 +911,7 @@ router.get('/:listId/items', async (req, res) => {
       return res.status(403).json({ error: 'This list is private.' });
     }
 
-    const items = await ListItem.find({ list_id: listId })
+    const itemsRaw = await ListItem.find({ list_id: listId })
       .populate({
         path: 'user_media_id',
         populate: {
@@ -755,6 +919,12 @@ router.get('/:listId/items', async (req, res) => {
         }
       })
       .sort({ position: 1, createdAt: -1 });
+
+    const items = itemsRaw.map((item) => {
+      const obj = item.toObject();
+      obj.section_id = null;
+      return obj;
+    });
 
     // If no items found, return a 404
     if (items.length === 0) {
@@ -783,12 +953,29 @@ router.get('/:listId/full', async (req, res) => {
       return res.status(403).json({ error: 'This list is private.' });
     }
 
-    const items = await ListItem.find({ list_id: listId })
+    const itemsRaw = await ListItem.find({ list_id: listId })
       .populate({
         path: 'user_media_id',
         populate: { path: 'unique_media_ref' }
-      })
-      .sort({ position: 1, createdAt: -1 });
+      });
+
+    const sortInBucket = (a, b) => {
+      const ap = typeof a.position === 'number' ? a.position : 0;
+      const bp = typeof b.position === 'number' ? b.position : 0;
+      if (ap !== bp) return ap - bp;
+      const ac = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      const bc = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      return bc - ac;
+    };
+
+    const items = [...itemsRaw]
+      .sort(sortInBucket)
+      .map((item) => {
+        const obj = item.toObject();
+        obj.section_id = null;
+        return obj;
+      });
+
     const listObject = list.toObject();
     const listOwner = await User.findById(list.user_id).select('_id username icon is_admin_badge is_creator_badge');
     const owner = listOwner
@@ -815,6 +1002,7 @@ router.get('/:listId/full', async (req, res) => {
 
     return res.status(200).json({
       ...listObject,
+      sections: [],
       items,
       totalCount: items.length,
       owner,

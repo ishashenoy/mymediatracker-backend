@@ -10,8 +10,10 @@ const UniqueMedia = require("../models/uniqueMediaModel");
 const User = require("../models/userModel");
 const { createFeedActivity, checkMilestones } = require("../controllers/feedController");
 const { fireEvent } = require("../controllers/eventsController");
-const { sanitizeText, sanitizeUrl } = require("../utils/sanitize");
+const { sanitizeText, sanitizeUrl, sanitizeIdentifier } = require("../utils/sanitize");
+const { resolveNewListItemSectionAndPosition } = require("../utils/listItemPlacement");
 const { normalizeStarRatingInput, ratingForApiResponse } = require("../utils/starRating");
+const { IMAGE_TRANSFORMS } = require("../utils/imageTransformProfiles");
 
 const trendingCache = new NodeCache({ stdTTL: 86400 });
 
@@ -681,15 +683,13 @@ const createMedia = async (req, res) => {
         if (listId && mongoose.Types.ObjectId.isValid(listId)) {
             const ListItem = require('../models/listItemModel');
             try {
-                const lastItem = await ListItem.findOne({ list_id: listId })
-                    .sort({ position: -1 })
-                    .select('position');
-                const nextPosition = typeof lastItem?.position === 'number' ? lastItem.position + 1 : 0;
+                const { position: nextPosition } = await resolveNewListItemSectionAndPosition(listId);
 
                 createdListItem = await ListItem.create({
                     list_id: listId,
                     user_id: user_id,
                     user_media_id: userMedia._id,
+                    section_id: null,
                     position: nextPosition,
                 });
             } catch (listItemError) {
@@ -713,6 +713,7 @@ const createMedia = async (req, res) => {
             ...serialized,
             listItemId: createdListItem?._id || null,
             position: typeof createdListItem?.position === 'number' ? createdListItem.position : null,
+            section_id: createdListItem?.section_id ?? null,
         });
     } catch (error) {
         console.error("Error in createMedia:", error);
@@ -825,17 +826,21 @@ const uploadMediaImage = async (req, res) => {
         if (!userId) {
             return res.status(401).json({ error: "Not authorized" });
         }
+        const rawReplaceKey = req.body?.replace_key;
+        const safeReplaceKey = rawReplaceKey
+            ? sanitizeIdentifier(rawReplaceKey, { maxLen: 80 })
+            : '';
+        const publicId = safeReplaceKey
+            ? `media-covers/${userId}/${safeReplaceKey}`
+            : `media-covers/${userId}/${Date.now()}`;
 
         const result = await new Promise((resolve, reject) => {
             cloudinary.uploader.upload_stream(
                 {
-                    public_id: `media-covers/${userId}/${Date.now()}`,
-                    overwrite: false,
+                    public_id: publicId,
+                    overwrite: Boolean(safeReplaceKey),
                     format: "webp",
-                    transformation: [
-                        { width: 1200, height: 1800, crop: "limit" },
-                        { quality: "auto:good", fetch_format: "auto" },
-                    ],
+                    transformation: IMAGE_TRANSFORMS.mediaCover,
                 },
                 (error, uploadResult) => {
                     if (error) reject(error);
@@ -903,6 +908,187 @@ const deleteMedia = async (req, res) => {
         res.status(200).json(serialized);
     } catch (error) {
         console.error("Error in deleteMedia:", error);
+        res.status(500).json({ error: error.message });
+    }
+};
+
+// PATCH link a user library row to an existing catalog UniqueMedia (keeps displayed cover / custom display)
+const linkUserMediaToCatalog = async (req, res) => {
+    try {
+        const user_id = req.user._id;
+        const { id } = req.params;
+        const {
+            unique_media_id: targetUniqueIdRaw,
+            source: sourceRaw,
+            media_id: mediaIdRaw,
+            type: typeRaw,
+            name: nameRaw,
+            image_url: imageUrlRaw,
+            score: scoreRaw,
+        } = req.body || {};
+
+        if (!mongoose.Types.ObjectId.isValid(id)) {
+            return res.status(404).json({ error: "Media does not exist." });
+        }
+        const oldEntry = await UserMedia.findOne({ _id: id, user_id }).populate("unique_media_ref");
+        if (!oldEntry) {
+            return res.status(404).json({ error: "Media does not exist." });
+        }
+
+        const oldUnique = oldEntry.unique_media_ref;
+        if (!oldUnique) {
+            return res.status(400).json({ error: "Invalid library entry." });
+        }
+
+        const targetUniqueId = String(targetUniqueIdRaw || "").trim();
+        const requestSource = String(sourceRaw || "").trim().toLowerCase();
+        const requestMediaId = String(mediaIdRaw || "").trim();
+        const requestType = String(typeRaw || "").trim().toLowerCase();
+        const requestName = sanitizeText(nameRaw, { maxLen: 200, allowNewlines: false });
+        const requestImageUrl = sanitizeUrl(imageUrlRaw);
+
+        let target;
+        if (mongoose.Types.ObjectId.isValid(targetUniqueId)) {
+            target = await UniqueMedia.findById(targetUniqueId).lean();
+        } else if (requestSource && requestMediaId) {
+            target = await UniqueMedia.findOne({
+                source: requestSource,
+                media_id: requestMediaId,
+                ...(requestType ? { type: requestType } : {}),
+            }).lean();
+        }
+
+        if (!target && requestSource && requestMediaId && requestType && requestName) {
+            const createdOrFound = await findOrCreateUniqueMedia({
+                name: requestName,
+                image_url: requestImageUrl || oldUnique.image_url || "",
+                type: requestType,
+                source: requestSource,
+                media_id: requestMediaId,
+                score: scoreRaw,
+                created_by: user_id,
+            });
+            target = createdOrFound?.toObject ? createdOrFound.toObject() : createdOrFound;
+        }
+
+        if (!target) {
+            return res.status(404).json({ error: "Catalog title not found." });
+        }
+
+        const src = String(target.source || "").trim().toLowerCase();
+        const mid = String(target.media_id || "").trim();
+        if (!src || !mid || src === "internal") {
+            return res.status(400).json({ error: "That entry cannot be used to load external details." });
+        }
+
+        if (String(target._id) === String(oldUnique._id)) {
+            return res.status(400).json({ error: "Already linked to this catalog entry." });
+        }
+
+        const oldType = String(oldUnique.type || "").toLowerCase();
+        const tgtType = String(target.type || "").toLowerCase();
+        const standardTypes = new Set(["anime", "manga", "movie", "tv", "game", "book", "music", "web-video"]);
+        const typesCompatible = oldType === tgtType || (oldType === "other" && standardTypes.has(tgtType));
+        if (!typesCompatible) {
+            return res.status(400).json({ error: "Catalog entry must match this item's media type." });
+        }
+
+        const dupe = await UserMedia.findOne({
+            user_id,
+            unique_media_ref: target._id,
+            _id: { $ne: oldEntry._id },
+        })
+            .select("_id")
+            .lean();
+        if (dupe) {
+            return res.status(409).json({
+                error: "You already have this catalog title in your library. Remove the duplicate entry first.",
+            });
+        }
+
+        // Ensure data linkage exists for analytics/recs: canonical + media_sources mapping.
+        const CanonicalMedia = require("../models/canonicalMediaModel");
+        const MediaSource = require("../models/mediaSourceModel");
+        let ms = await MediaSource.findOne({ source: target.source, source_media_id: target.media_id })
+            .select("canonical_id")
+            .lean();
+        let newCanonical = ms?.canonical_id || null;
+
+        if (!newCanonical) {
+            const canonicalType = String(target.type || "").trim().toLowerCase();
+            const canonicalName = String(target.name || "").trim() || requestName || oldUnique.name || "Untitled";
+            const canonicalImage = String(target.image_url || "").trim() || requestImageUrl || oldUnique.image_url || "";
+
+            let canonical = await CanonicalMedia.findOne({
+                type: canonicalType,
+                normalized_name: normalizeName(canonicalName),
+            });
+
+            if (!canonical) {
+                canonical = await CanonicalMedia.create({
+                    type: canonicalType,
+                    name: canonicalName,
+                    normalized_name: normalizeName(canonicalName),
+                    primary_image_url: canonicalImage,
+                    is_user_submitted: false,
+                });
+            }
+
+            const upsertedSource = await MediaSource.findOneAndUpdate(
+                { source: target.source, source_media_id: target.media_id },
+                {
+                    canonical_id: canonical._id,
+                    metadata_snapshot: {
+                        name: canonicalName,
+                        image_url: canonicalImage,
+                        score: target.score ?? scoreRaw ?? null,
+                    },
+                    last_fetched_at: new Date(),
+                },
+                { upsert: true, new: true }
+            ).select("canonical_id");
+
+            newCanonical = upsertedSource?.canonical_id || canonical._id;
+        }
+
+        const displayNameCustom = Boolean(oldEntry.use_custom_display && oldEntry.custom_name);
+        const serializedOldEntry = serializeUserMedia(oldEntry);
+        const currentDisplayedImage = serializedOldEntry?.image_url || oldUnique.image_url || "";
+
+        const updates = {
+            unique_media_ref: target._id,
+            canonical_id: newCanonical,
+            // Always pin the currently displayed cover so linking never swaps it.
+            use_custom_display: true,
+            custom_image_url: sanitizeUrl(currentDisplayedImage || ""),
+            custom_name: displayNameCustom
+                ? sanitizeText(oldEntry.custom_name, { maxLen: 200, allowNewlines: false })
+                : "",
+        };
+
+        const updated = await UserMedia.findByIdAndUpdate(oldEntry._id, { $set: updates }, { new: true }).populate(
+            "unique_media_ref"
+        );
+
+        const oldUniqueId = oldUnique._id;
+        const refCount = await UserMedia.countDocuments({ unique_media_ref: oldUniqueId });
+        if (refCount === 0 && String(oldUnique.source || "").trim().toLowerCase() === "internal") {
+            const imgUrl = oldUnique.image_url || "";
+            if (imgUrl) {
+                try {
+                    const match = imgUrl.match(/upload\/(?:v\d+\/)?(.+)\.[^.]+$/);
+                    const publicId = match ? match[1] : null;
+                    if (publicId) await cloudinary.uploader.destroy(publicId).catch(() => {});
+                } catch (_) {
+                    /* ignore */
+                }
+            }
+            await UniqueMedia.deleteOne({ _id: oldUniqueId });
+        }
+
+        return res.status(200).json(serializeUserMedia(updated));
+    } catch (error) {
+        console.error("linkUserMediaToCatalog:", error);
         res.status(500).json({ error: error.message });
     }
 };
@@ -1160,6 +1346,7 @@ module.exports = {
     getMyEntryByLookup,
     getInternalMediaDetails,
     deleteMedia,
+    linkUserMediaToCatalog,
     updateMedia,
     updateInternalMediaDetails,
     importMedia,

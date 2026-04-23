@@ -18,6 +18,7 @@ const listSchema = new Schema(
       enum: ['manual', 'watchlist', 'favorites', 'ranked', 'other'],
       default: 'manual',
     },
+    cover_image_url: { type: String, default: null },
   },
   { timestamps: true } // Automatically adds createdAt and updatedAt timestamps
 );

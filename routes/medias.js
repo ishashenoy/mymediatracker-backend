@@ -8,6 +8,7 @@ const {
     getTrendingMedia,
     getInternalMediaDetails,
     deleteMedia,
+    linkUserMediaToCatalog,
     updateMedia,
     updateInternalMediaDetails,
     importMedia,
@@ -130,6 +131,9 @@ router.post('/upload-image', maintenanceMode, (req, res, next) => {
 router.delete('/:id', maintenanceMode, deleteMedia);
 
 router.patch('/details/:uniqueMediaId', maintenanceMode, updateInternalMediaDetails);
+
+// Link library entry to an existing catalog UniqueMedia (rich metadata; keeps cover)
+router.patch('/:id/link-catalog', maintenanceMode, linkUserMediaToCatalog);
 
 //UPDATE a media
 router.patch('/:id', maintenanceMode, updateMedia);

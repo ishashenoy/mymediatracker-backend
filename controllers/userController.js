@@ -18,6 +18,7 @@ const { isAdminUser, isOwnerOrAdmin, canViewPrivateAccountContent } = require('.
 const { scheduledPurgeAtFromNow, GRACE_DAYS, isAccountPendingDeletion } = require('../utils/accountDeletion');
 const { userHasAdminBadge } = require('../utils/adminBadge');
 const UserMedia = require('../models/userMediaModel');
+const { IMAGE_TRANSFORMS } = require('../utils/imageTransformProfiles');
 const {
     sanitizeTimeZone,
     dayKeyFromInstant,
@@ -305,13 +306,7 @@ const changeIcon = async (req, res) => {
                         public_id: `icons/${user._id}`, // unique id for this user's icon
                         overwrite: true,
                         format: "webp",
-                        transformation: [
-                            { width: 500, height: 500, crop: "fill" },
-                            { quality: "auto:low", fetch_format: "auto" },
-                            { effect: "improve" },
-                            { dpr: "auto" },
-                            { compression: "medium" }
-                        ]
+                        transformation: IMAGE_TRANSFORMS.userIcon
                     },
                     (error, result) => {
                         if (error) reject(error);
@@ -386,12 +381,7 @@ const changeBanner = async (req, res) => {
                         public_id: `banners/${user._id}`,
                         overwrite: true,
                         format: "webp",
-                        transformation: [
-                            { width: 1800, height: 600, crop: "fill", gravity: "auto" },
-                            { quality: "auto:low", fetch_format: "auto" },
-                            { dpr: "auto" },
-                            { compression: "medium" }
-                        ]
+                        transformation: IMAGE_TRANSFORMS.userBanner
                     },
                     (error, result) => {
                         if (error) reject(error);
@@ -797,6 +787,15 @@ const getUserProfile = async (req, res) => {
                 updatedAt: media.updatedAt
             };
         };
+        const serializePreviewListItem = (item) => {
+            if (!item) return null;
+            return {
+                _id: item._id,
+                position: typeof item.position === 'number' ? item.position : null,
+                createdAt: item.createdAt,
+                user_media_id: serializeUserMedia(item.user_media_id),
+            };
+        };
         
         const listDetails = await Promise.all(
             userLists.map(async (list) => {
@@ -819,12 +818,13 @@ const getUserProfile = async (req, res) => {
                     _id: list._id,
                     name: list.name,
                     system_key: list.system_key,
+                    cover_image_url: list.cover_image_url || null,
                     private: list.private === true,
                     position: typeof list.position === 'number' ? list.position : 0,
                     created_at: list.created_at,
                     updated_at: list.updated_at,
                     media_count: mediaCount,
-                    previewItems: previewItems.map(item => serializeUserMedia(item.user_media_id)).filter(Boolean)
+                    previewItems: previewItems.map((item) => serializePreviewListItem(item)).filter(Boolean)
                 };
             })
         );

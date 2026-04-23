@@ -1,4 +1,5 @@
 const cloudinary = require('cloudinary').v2;
+const { IMAGE_TRANSFORMS } = require('./imageTransformProfiles');
 
 cloudinary.config({
   cloudinary_url: process.env.CLOUDINARY_URL,
@@ -18,10 +19,7 @@ function uploadPostImageBuffer(buffer, userId) {
         public_id: `post-embeds/${safeUser}/${Date.now()}`,
         overwrite: false,
         format: 'webp',
-        transformation: [
-          { width: 1920, height: 1920, crop: 'limit' },
-          { quality: 'auto:good', fetch_format: 'auto' },
-        ],
+        transformation: IMAGE_TRANSFORMS.postEmbed,
       },
       (error, uploadResult) => {
         if (error) reject(error);

@@ -6,6 +6,7 @@ const UserMedia = require('../models/userMediaModel');
 const UniqueMedia = require('../models/uniqueMediaModel');
 const List = require('../models/listModel');
 const ListItem = require('../models/listItemModel');
+const ListSection = require('../models/listSectionModel');
 const Feed = require('../models/feedModel');
 const Post = require('../models/postModel');
 const PostInteraction = require('../models/postInteractionModel');
@@ -54,6 +55,9 @@ async function permanentlyPurgeUser(userId) {
   const listIds = await List.find({ user_id: uid }).distinct('_id');
 
   await ListItem.deleteMany({
+    $or: [{ user_id: uid }, { list_id: { $in: listIds } }],
+  });
+  await ListSection.deleteMany({
     $or: [{ user_id: uid }, { list_id: { $in: listIds } }],
   });
   await List.deleteMany({ user_id: uid });

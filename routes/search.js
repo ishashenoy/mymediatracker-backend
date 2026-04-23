@@ -13,8 +13,8 @@ const limiter = rateLimit({
 
 router.use(limiter);
 
-const UNIFIED_MEDIA_TYPES = ['anime', 'manga', 'tv', 'movie', 'book', 'game', 'music', 'web-video'];
-const ALL_SEARCHABLE_TYPES = [...UNIFIED_MEDIA_TYPES, 'web-video'];
+const UNIFIED_MEDIA_TYPES = ['anime', 'manga', 'tv', 'movie', 'book', 'game', 'music'];
+const ALL_SEARCHABLE_TYPES = [...UNIFIED_MEDIA_TYPES];
 
 // Unified search across all media types - sorted by title relevance
 // Optional query: ?type=movie (or anime, manga, tv, book, game, music) to search one type only
@@ -163,16 +163,6 @@ router.get('/all/:title', requireAuth, async function(req, res) {
                 .then(j => ({ kind: 'music', rows: j.results || [] }))
         );
     }
-    if (activeTypes.includes('web-video')) {
-        fetchJobs.push(
-            fetch(
-                `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=20&q=${encodeURIComponent(title)}&key=${process.env.YOUTUBE_API_KEY}`,
-                { signal: abortCont.signal }
-            )
-                .then(r => r.ok ? r.json() : { items: [] })
-                .then(j => ({ kind: 'web-video', rows: j.items || [] }))
-        );
-    }
 
     try {
         const settled = await Promise.allSettled(fetchJobs);
@@ -283,26 +273,6 @@ router.get('/all/:title', requireAuth, async function(req, res) {
                         raw: item
                     });
                 });
-            } else if (kind === 'web-video') {
-                rows.forEach(item => {
-                    const videoId = item?.id?.videoId || '';
-                    const snippet = item?.snippet || {};
-                    const name = snippet.title || '';
-                    const imageUrl =
-                        snippet?.thumbnails?.high?.url
-                        || snippet?.thumbnails?.medium?.url
-                        || snippet?.thumbnails?.default?.url
-                        || null;
-                    allResults.push({
-                        id: videoId,
-                        name,
-                        image_url: imageUrl,
-                        type: 'web-video',
-                        source: 'youtube',
-                        relevance: getRelevanceScore(name, searchQuery),
-                        raw: item
-                    });
-                });
             }
         });
 
@@ -351,28 +321,6 @@ router.get('/all/:title', requireAuth, async function(req, res) {
             return res.status(504).json({ error: 'Search request timed out' });
         }
         return res.status(500).json({ error: error.message || 'Failed to perform unified search' });
-    }
-});
-
-// Fetching details for a specific YouTube video
-router.get('/youtube/details/:id', requireAuth, async function(req, res){
-    const { id } = req.params;
-    const baseUrl = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id=${encodeURIComponent(id)}&key=${process.env.YOUTUBE_API_KEY}`;
-
-    try {
-        const response = await fetch(baseUrl);
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`YouTube API error: ${response.status} - ${errorText}`);
-        }
-        const json = await response.json();
-        const item = (json.items || [])[0] || null;
-        if (!item) {
-            return res.status(404).json({ error: "Video not found" });
-        }
-        return res.status(200).json(item);
-    } catch (error) {
-        return res.status(500).json({ error: error.message || "Failed to fetch YouTube details" });
     }
 });
 

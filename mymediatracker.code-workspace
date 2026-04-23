@@ -5,6 +5,9 @@
 		},
 		{
 			"path": "../mymediatracker-frontend"
+		},
+		{
+			"path": "../mymediatracker-frontend-app"
 		}
 	]
 }
