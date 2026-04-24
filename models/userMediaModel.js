@@ -28,6 +28,10 @@ const userMediaSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.Mixed,
       default: null,
     },
+    watched_episodes: {
+      type: [String],
+      default: [],
+    },
     fav: {
       type: Boolean,
       default: false,
@@ -46,6 +50,11 @@ const userMediaSchema = new mongoose.Schema(
     custom_image_url: {
       type: String,
       default: '',
+    },
+    aspectRatio: {
+      type: String,
+      enum: ['poster', 'square', 'landscape'],
+      default: null,
     },
 
     // --- New data capture fields (all optional) ---

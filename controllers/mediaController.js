@@ -58,6 +58,42 @@ function normalizeProgress(rawProgress) {
     return str;
 }
 
+function normalizeWatchedEpisodes(rawEpisodes) {
+    if (rawEpisodes === undefined) return { provided: false, value: undefined };
+    if (rawEpisodes === null) return { provided: true, value: [] };
+    if (!Array.isArray(rawEpisodes)) {
+        throw new Error("watched_episodes must be an array");
+    }
+
+    const seen = new Set();
+    const normalized = [];
+    for (const episode of rawEpisodes) {
+        if (episode === undefined || episode === null) continue;
+        const key = String(episode).trim();
+        if (!key) continue;
+        if (key.length > 80) {
+            throw new Error("Episode identifier is too long");
+        }
+        if (seen.has(key)) continue;
+        seen.add(key);
+        normalized.push(key);
+    }
+
+    return { provided: true, value: normalized };
+}
+
+const VALID_ASPECT_RATIOS = new Set(["poster", "square", "landscape"]);
+
+function normalizeAspectRatio(rawValue) {
+    if (rawValue === undefined) return { provided: false, value: undefined };
+    if (rawValue === null || rawValue === "") return { provided: true, value: null };
+    const value = String(rawValue).trim().toLowerCase();
+    if (!VALID_ASPECT_RATIOS.has(value)) {
+        throw new Error("Aspect ratio must be one of: poster, square, landscape");
+    }
+    return { provided: true, value };
+}
+
 function serializeUserMedia(doc) {
     const media = doc.unique_media_ref || {};
     const useCustomDisplay = Boolean(doc.use_custom_display);
@@ -71,6 +107,7 @@ function serializeUserMedia(doc) {
         rating: ratingForApiResponse(doc.rating),
         status: doc.status,
         progress: doc.progress,
+        watched_episodes: Array.isArray(doc.watched_episodes) ? doc.watched_episodes : [],
         fav: doc.fav,
         createdAt: doc.createdAt,
         updatedAt: doc.updatedAt,
@@ -78,6 +115,7 @@ function serializeUserMedia(doc) {
         use_custom_display: useCustomDisplay,
         custom_name: doc.custom_name || "",
         custom_image_url: doc.custom_image_url || "",
+        aspectRatio: doc.aspectRatio || null,
 
         name: useCustomDisplay && doc.custom_name ? doc.custom_name : media.name,
         image_url: useCustomDisplay && doc.custom_image_url ? doc.custom_image_url : media.image_url,
@@ -562,6 +600,8 @@ const createMedia = async (req, res) => {
         mood_tags,
         owned,
         dropped_at_progress,
+        aspectRatio,
+        watched_episodes,
     } = req.body;
 
     const safeName = sanitizeText(name, { maxLen: 200, allowNewlines: false });
@@ -574,6 +614,12 @@ const createMedia = async (req, res) => {
     const safeSourceOfDiscovery = source_of_discovery !== undefined ? sanitizeText(source_of_discovery, { maxLen: 120, allowNewlines: false }) : undefined;
     const safePlatform = platform !== undefined ? sanitizeText(platform, { maxLen: 80, allowNewlines: false }) : undefined;
     const safeFormat = format !== undefined ? sanitizeText(format, { maxLen: 80, allowNewlines: false }) : undefined;
+    let normalizedAspect;
+    try {
+        normalizedAspect = normalizeAspectRatio(aspectRatio);
+    } catch (err) {
+        return res.status(400).json({ error: err.message });
+    }
 
     if (!safeName || !type) {
         return res.status(400).json({ error: "Name and type are required." });
@@ -597,6 +643,12 @@ const createMedia = async (req, res) => {
         let safeProgress = "";
         try {
             safeProgress = normalizeProgress(progress);
+        } catch (err) {
+            return res.status(400).json({ error: err.message });
+        }
+        let normalizedWatchedEpisodes;
+        try {
+            normalizedWatchedEpisodes = normalizeWatchedEpisodes(watched_episodes);
         } catch (err) {
             return res.status(400).json({ error: err.message });
         }
@@ -656,6 +708,7 @@ const createMedia = async (req, res) => {
             rating: ratingToStore,
             status,
             fav: Boolean(fav),
+            ...(normalizedWatchedEpisodes.provided && { watched_episodes: normalizedWatchedEpisodes.value }),
 
             use_custom_display: shouldUseCustomDisplay,
             custom_name: shouldUseCustomDisplay ? (safeCustomName || safeName || "") : "",
@@ -673,6 +726,7 @@ const createMedia = async (req, res) => {
             ...(mood_tags !== undefined && { mood_tags: Array.isArray(mood_tags) ? mood_tags : [] }),
             ...(owned !== undefined && { owned: Boolean(owned) }),
             ...(dropped_at_progress !== undefined && { dropped_at_progress }),
+            ...(normalizedAspect.provided && { aspectRatio: normalizedAspect.value }),
         });
 
         const populated = await UserMedia.findById(userMedia._id).populate("unique_media_ref");
@@ -1131,6 +1185,14 @@ const updateMedia = async (req, res) => {
                 return res.status(400).json({ error: err.message });
             }
         }
+        if (incoming.watched_episodes !== undefined) {
+            try {
+                const normalizedWatchedEpisodes = normalizeWatchedEpisodes(incoming.watched_episodes);
+                updates.watched_episodes = normalizedWatchedEpisodes.value;
+            } catch (err) {
+                return res.status(400).json({ error: err.message });
+            }
+        }
 
         if (incoming.use_custom_display !== undefined) {
             updates.use_custom_display = Boolean(incoming.use_custom_display);
@@ -1142,6 +1204,15 @@ const updateMedia = async (req, res) => {
 
         if (incoming.custom_image_url !== undefined) {
             updates.custom_image_url = sanitizeUrl(incoming.custom_image_url);
+        }
+
+        if (incoming.aspectRatio !== undefined) {
+            try {
+                const normalizedAspect = normalizeAspectRatio(incoming.aspectRatio);
+                updates.aspectRatio = normalizedAspect.value;
+            } catch (err) {
+                return res.status(400).json({ error: err.message });
+            }
         }
 
         // Tier 2/3 fields
