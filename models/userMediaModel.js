@@ -58,12 +58,6 @@ const userMediaSchema = new mongoose.Schema(
     },
 
     // --- New data capture fields (all optional) ---
-    canonical_id: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'CanonicalMedia',
-      default: null,
-      index: true,
-    },
     review_text: {
       type: String,
       default: null,
@@ -120,9 +114,5 @@ const userMediaSchema = new mongoose.Schema(
 
 userMediaSchema.index({ user_id: 1, status: 1 });
 userMediaSchema.index({ user_id: 1, fav: 1 });
-userMediaSchema.index(
-  { user_id: 1, canonical_id: 1 },
-  { unique: true, partialFilterExpression: { canonical_id: { $type: 'objectId' } } }
-);
 
 module.exports = mongoose.model('UserMedia', userMediaSchema);

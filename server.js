@@ -56,8 +56,6 @@ app.use('/api/notifications', require('./routes/notifications'));
 mongoose.connect(process.env.MONGO_URI)
   .then(() => {
     // Register new collections so their indexes are created on startup
-    require('./models/canonicalMediaModel');
-    require('./models/mediaSourceModel');
     require('./models/eventModel');
     require('./models/userUploadModel');
     require('./models/followModel');

@@ -10,7 +10,7 @@ const axios = require('axios');
 const cloudinary = require('cloudinary').v2;
 const bcrypt = require('bcrypt');
 const validator = require('validator');
-const { sanitizeText, sanitizeFeedbackMessage, sanitizeIdentifier } = require('../utils/sanitize');
+const { sanitizeText, sanitizeDisplayName, sanitizeFeedbackMessage, sanitizeIdentifier } = require('../utils/sanitize');
 const { ratingForApiResponse } = require('../utils/starRating');
 const Feedback = require('../models/feedbackModel');
 const { createNotification } = require('./notificationController');
@@ -41,6 +41,7 @@ const serializePublicUser = (user) => {
     return {
         _id: user._id,
         username: user.username,
+        displayName: user.displayName || '',
         icon: user.icon || null,
         banner: user.banner || null,
         is_admin_badge: userHasAdminBadge(user),
@@ -158,6 +159,7 @@ const loginUser = async (req, res) => {
     const token = createToken(user._id);
     return res.status(200).json({
       username: user.username,
+      displayName: user.displayName || '',
       id: user._id.toString(),
       token,
       icon: user.icon || null,
@@ -195,10 +197,10 @@ const getConnections = async (req, res) => {
 
     const [followerUsers, followingUsers] = await Promise.all([
         userFollowers.length
-            ? User.find({ username: { $in: userFollowers } }).select('username icon is_admin_badge is_creator_badge').lean()
+            ? User.find({ username: { $in: userFollowers } }).select('username displayName icon is_admin_badge is_creator_badge').lean()
             : [],
         userFollowing.length
-            ? User.find({ username: { $in: userFollowing } }).select('username icon is_admin_badge is_creator_badge').lean()
+            ? User.find({ username: { $in: userFollowing } }).select('username displayName icon is_admin_badge is_creator_badge').lean()
             : [],
     ]);
 
@@ -263,10 +265,12 @@ const changePrivacy = async (req, res) => {
         }
 
         // Update the user's private status with the new value  
-        const user = await User.findOneAndUpdate({ _id: senderId}, {
-            ...req.body
-        },{ new: true });
-        return res.status(200).json({...req.body});
+        const user = await User.findOneAndUpdate(
+            { _id: senderId },
+            { private: req.body.private },
+            { new: true }
+        );
+        return res.status(200).json({ private: user.private });
     }catch (error){
         return res.status(500).json({error});
     }
@@ -438,11 +442,12 @@ const searchUsers = async (req, res) => {
                 { account_deletion_requested_at: { $exists: false } },
             ],
         })
-        .select('username icon private is_admin_badge is_creator_badge')
+        .select('username displayName icon private is_admin_badge is_creator_badge')
         .limit(20);
 
         const results = users.map(u => ({
             username: u.username,
+            displayName: u.displayName || '',
             icon: u.icon || null,
             private: u.private,
             is_admin_badge: userHasAdminBadge(u),
@@ -579,6 +584,7 @@ const signupUser = async (req, res) => {
     const token = createToken(user._id);
     return res.status(200).json({
         username: user.username,
+        displayName: user.displayName || '',
         id: user._id.toString(),
         token,
         hide_explicit_covers: user.hide_explicit_covers !== false,
@@ -834,6 +840,7 @@ const getUserProfile = async (req, res) => {
             user: {
                 _id: user._id,
                 username: user.username,
+                displayName: user.displayName || '',
                 icon: user.icon,
                 banner: user.banner || null,
                 is_admin_badge: userHasAdminBadge(user),
@@ -1195,6 +1202,30 @@ const updateBio = async (req, res) => {
     }
 };
 
+const updateDisplayName = async (req, res) => {
+    const { username } = req.params;
+    const senderId = req.user._id;
+
+    try {
+        const user = await User.findOne({ username });
+        if (!user) return res.status(404).json({ error: 'User not found' });
+        if (!user._id.equals(senderId)) return res.status(401).json({ error: 'Not authorized' });
+
+        if (!(typeof req.body.displayName === 'string' || req.body.displayName === null || req.body.displayName === undefined)) {
+            return res.status(400).json({ error: 'displayName must be a string or null' });
+        }
+
+        const rawDisplayName = typeof req.body.displayName === 'string' ? req.body.displayName : '';
+        const safeDisplayName = sanitizeDisplayName(rawDisplayName, { maxLen: 50 });
+        user.displayName = safeDisplayName;
+        await user.save();
+
+        return res.status(200).json({ displayName: user.displayName || '' });
+    } catch (error) {
+        return res.status(500).json({ error: error.message || 'Failed to update display name' });
+    }
+};
+
 const updateSocialLinks = async (req, res) => {
     const { username } = req.params;
     const senderId = req.user._id;
@@ -1533,6 +1564,7 @@ module.exports = {
     resetPassword,
     updateOnboarding,
     updateBio,
+    updateDisplayName,
     updateSocialLinks,
     getMediaActivityHeatmap,
     submitFeedback,

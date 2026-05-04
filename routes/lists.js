@@ -472,7 +472,7 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
       return res.status(ownership.error.status).json({ error: ownership.error.message });
     }
 
-    // Find or create UniqueMedia (shared helper also dual-writes to canonical_media)
+    // Find or create UniqueMedia
     const uniqueMedia = await findOrCreateUniqueMedia({
       name: safeName,
       image_url: safeImageUrl,
@@ -512,7 +512,7 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
     }
 
     // Fire list_add event (async, fire-and-forget)
-    setImmediate(() => fireEvent(user_id, 'list_add', userMedia.canonical_id || null, {
+    setImmediate(() => fireEvent(user_id, 'list_add', userMedia.unique_media_ref, {
       list_id: String(listId),
     }));
 

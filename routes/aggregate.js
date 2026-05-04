@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const router = express.Router();
 const NodeCache = require('node-cache');
 const rateLimit = require('express-rate-limit');
@@ -9,9 +10,13 @@ const PostInteraction = require('../models/postInteractionModel');
 const PollVote = require('../models/pollVoteModel');
 const UserMedia = require('../models/userMediaModel');
 const User = require('../models/userModel');
+const UniqueMedia = require('../models/uniqueMediaModel');
 const List = require('../models/listModel');
-
+const ListItem = require('../models/listItemModel');
 const { buildFeedPostQuery } = require('../utils/feedPostQuery');
+const { buildLinkedListCardMap, listRefKey } = require('../utils/linkedListCardPayload');
+const { canViewPrivateAccountContent } = require('../utils/privacy');
+const { userHasAdminBadge } = require('../utils/adminBadge');
 
 const limiter = rateLimit({
   windowMs: 5 * 60 * 1000,
@@ -44,10 +49,7 @@ async function hydratePosts(posts, userId) {
   const pollVoteMap = new Map(pollVotes.map(v => [v.post_id.toString(), v.option_index]));
 
   const listIds = posts.map(p => p.linked_list_id).filter(Boolean);
-  const lists = listIds.length
-    ? await List.find({ _id: { $in: listIds } }).select('_id name').lean()
-    : [];
-  const listMap = new Map(lists.map(l => [l._id.toString(), l]));
+  const listMap = await buildLinkedListCardMap(listIds);
 
   return posts.map(p => ({
     ...p,
@@ -60,8 +62,8 @@ async function hydratePosts(posts, userId) {
     viewer_poll_vote: pollVoteMap.has(p._id.toString())
       ? pollVoteMap.get(p._id.toString())
       : null,
-    linked_list: p.linked_list_id
-      ? (listMap.get(p.linked_list_id.toString()) || null)
+    linked_list: listRefKey(p.linked_list_id)
+      ? (listMap.get(listRefKey(p.linked_list_id)) || null)
       : null,
   }));
 }
@@ -147,8 +149,104 @@ async function fetchSidebarData(userId) {
   };
 }
 
+function followingStripUserPayload(doc) {
+  return {
+    _id: doc._id,
+    username: doc.username,
+    displayName: doc.displayName || '',
+    icon: doc.icon || null,
+    is_admin_badge: userHasAdminBadge(doc),
+  };
+}
+
+/** People you follow (in follow order) whose newest library title on a public list has a usable cover. */
+async function fetchFollowingFeedStrip(viewerId) {
+  const me = await User.findById(viewerId).select('following').lean();
+  const followingUsernames = Array.isArray(me?.following) ? me.following : [];
+  if (!followingUsernames.length) return [];
+
+  const followedUsers = await User.find({ username: { $in: followingUsernames } })
+    .select('username displayName icon is_admin_badge is_creator_badge private account_deletion_requested_at')
+    .lean();
+
+  const byUsername = new Map(followedUsers.map((u) => [u.username, u]));
+  const ordered = followingUsernames.map((uname) => byUsername.get(uname)).filter(Boolean);
+  const visible = ordered.filter((u) => canViewPrivateAccountContent(u, me));
+  if (!visible.length) return [];
+
+  const ids = visible.map((u) => u._id);
+
+  const publicLists = await List.find({
+    user_id: { $in: ids },
+    archived: { $ne: true },
+    private: { $ne: true },
+  })
+    .select('_id')
+    .lean();
+
+  const publicListIds = publicLists.map((l) => l._id);
+  if (!publicListIds.length) return [];
+
+  const listItems = await ListItem.find({
+    list_id: { $in: publicListIds },
+    user_id: { $in: ids },
+  })
+    .select('user_media_id')
+    .lean();
+
+  const allowedMediaIds = [...new Set(listItems.map((li) => li.user_media_id.toString()))];
+  if (!allowedMediaIds.length) return [];
+
+  const allowedObjectIds = allowedMediaIds.map((id) => new mongoose.Types.ObjectId(id));
+
+  const groups = await UserMedia.aggregate([
+    {
+      $match: {
+        user_id: { $in: ids },
+        _id: { $in: allowedObjectIds },
+      },
+    },
+    { $sort: { user_id: 1, createdAt: -1 } },
+    { $group: { _id: '$user_id', doc: { $first: '$$ROOT' } } },
+  ]);
+
+  const groupMap = new Map(groups.map((g) => [g._id.toString(), g.doc]));
+  const umObjectIds = [...new Set(groups.map((g) => g.doc.unique_media_ref).filter(Boolean))];
+  const ums = await UniqueMedia.find({ _id: { $in: umObjectIds } })
+    .select('name type image_url')
+    .lean();
+  const umMap = new Map(ums.map((u) => [u._id.toString(), u]));
+
+  return visible
+    .map((u) => {
+      const doc = groupMap.get(u._id.toString());
+      let last_media = null;
+      if (doc) {
+        const media = umMap.get(String(doc.unique_media_ref)) || {};
+        const useCustom = Boolean(doc.use_custom_display) && String(doc.custom_image_url || '').trim();
+        const cover_url = useCustom ? doc.custom_image_url : (media.image_url || '');
+        if (cover_url && cover_url !== 'N/A') {
+          const name =
+            useCustom && String(doc.custom_name || '').trim()
+              ? doc.custom_name
+              : (media.name || '');
+          last_media = {
+            cover_url,
+            name,
+            type: media.type || '',
+          };
+        }
+      }
+      return {
+        user: followingStripUserPayload(u),
+        last_media,
+      };
+    })
+    .filter((row) => row.last_media != null);
+}
+
 // ── GET /api/aggregate/home ─────────────────────────────────────────────────
-// Returns: { feed: { posts, nextCursor, hasMore }, suggestions, trending }
+// Returns: { feed, suggestions, trending, followingFeedStrip }
 // Runs feed + sidebar queries in parallel; sidebar results are cached.
 // Only use this endpoint for the initial (no-cursor) page load — subsequent
 // "load more" requests should hit /api/posts/feed directly.
@@ -183,9 +281,10 @@ router.get('/home', limiter, requireAuth, async (req, res) => {
       };
     })();
 
-    const [feedResult, sidebarResult] = await Promise.allSettled([
+    const [feedResult, sidebarResult, followingStripResult] = await Promise.allSettled([
       feedPromise,
       fetchSidebarData(userId),
+      fetchFollowingFeedStrip(userId),
     ]);
 
     const feed = feedResult.status === 'fulfilled'
@@ -196,7 +295,22 @@ router.get('/home', limiter, requireAuth, async (req, res) => {
       ? sidebarResult.value
       : { suggestions: [], trending: [] };
 
-    return res.status(200).json({ feed, suggestions, trending });
+    const followingFeedStrip = followingStripResult.status === 'fulfilled'
+      ? followingStripResult.value
+      : [];
+
+    return res.status(200).json({ feed, suggestions, trending, followingFeedStrip });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET /api/aggregate/following-strip ────────────────────────────────────
+// Fallback when home is loaded without aggregate bundle (e.g. legacy clients).
+router.get('/following-strip', limiter, requireAuth, async (req, res) => {
+  try {
+    const rows = await fetchFollowingFeedStrip(req.user._id);
+    return res.status(200).json({ followingFeedStrip: rows });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

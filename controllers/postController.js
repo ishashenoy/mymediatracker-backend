@@ -16,6 +16,7 @@ const {
   isTrustedImageUrl,
 } = require('../utils/postImageUpload');
 const { VALID_POST_TAGS, buildFeedPostQuery } = require('../utils/feedPostQuery');
+const { buildLinkedListCardMap, listRefKey } = require('../utils/linkedListCardPayload');
 
 function normalizeEmbeddedImages(raw) {
   if (!raw) return [];
@@ -145,13 +146,12 @@ const createPost = async (req, res) => {
     }
 
     const post = await Post.create(postData);
-    await post.populate('author_id', 'username icon is_admin_badge is_creator_badge');
+    await post.populate('author_id', 'username displayName icon is_admin_badge is_creator_badge');
 
-    // Populate linked list name for response
     let linkedListData = null;
     if (post.linked_list_id) {
-      const list = await List.findById(post.linked_list_id).select('name').lean();
-      linkedListData = list ? { _id: list._id, name: list.name } : null;
+      const map = await buildLinkedListCardMap([post.linked_list_id]);
+      linkedListData = map.get(listRefKey(post.linked_list_id)) || null;
     }
 
     fireEvent(userId, 'post_create', null, {
@@ -211,7 +211,7 @@ const getFeedPosts = async (req, res) => {
     const { query } = built;
 
     const rawPosts = await Post.find(query)
-      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -238,7 +238,7 @@ const getPostById = async (req, res) => {
 
   try {
     const raw = await Post.findById(postId)
-      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
       .lean();
     if (!raw) return res.status(404).json({ error: 'Post not found.' });
 
@@ -280,7 +280,7 @@ const getPostsByMedia = async (req, res) => {
       : mediaMatch;
 
     const rawPosts = await Post.find(query)
-      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -312,7 +312,7 @@ const getPostsByList = async (req, res) => {
     if (cursor) query.created_at = { $lt: new Date(cursor) };
 
     const rawPosts = await Post.find(query)
-      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -520,7 +520,7 @@ const addComment = async (req, res) => {
     });
 
     await Post.findByIdAndUpdate(postId, { $inc: { comment_count: 1 } });
-    await comment.populate('author_id', 'username icon is_admin_badge is_creator_badge');
+    await comment.populate('author_id', 'username displayName icon is_admin_badge is_creator_badge');
 
     fireEvent(userId, 'post_comment', null, {
       post_id: postId,
@@ -586,7 +586,7 @@ const getComments = async (req, res) => {
     if (cursor) query.created_at = { $gt: new Date(cursor) };
 
     const rawComments = await Comment.find(query)
-      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
       .sort({ created_at: 1 })
       .limit(limit + 1)
       .lean();
@@ -646,7 +646,7 @@ const getBookmarkedPosts = async (req, res) => {
 
     const postIds = interactions.map(i => i.post_id);
     const posts = await Post.find({ _id: { $in: postIds } })
-      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
       .lean();
 
     // Preserve bookmark-date order
@@ -687,7 +687,7 @@ const getBookmarkedComments = async (req, res) => {
 
     const commentIds = interactions.map(i => i.comment_id);
     const comments = await Comment.find({ _id: { $in: commentIds } })
-      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
       .lean();
 
     const postIds = [...new Set(comments.map(c => c.post_id.toString()))];
@@ -743,7 +743,7 @@ const getUserPosts = async (req, res) => {
     const ownPostQuery = { author_id: profileUserId };
     if (dateFilter) ownPostQuery.created_at = dateFilter;
     const ownPosts = await Post.find(ownPostQuery)
-      .populate('author_id', 'username icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -759,7 +759,7 @@ const getUserPosts = async (req, res) => {
     if (repostInteractions.length > 0) {
       const repostPostIds = repostInteractions.map(i => i.post_id);
       const repostedPosts = await Post.find({ _id: { $in: repostPostIds } })
-        .populate('author_id', 'username icon is_admin_badge is_creator_badge')
+        .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
         .lean();
       const repostDateMap = new Map(
         repostInteractions.map(i => [i.post_id.toString(), i.created_at])
@@ -827,7 +827,7 @@ const getSuggestions = async (req, res) => {
 // Enriches a raw posts array with:
 //  - viewer_interactions (liked/reposted/bookmarked)
 //  - viewer_poll_vote (option_index or null)
-//  - linked_list (name + _id populated from List, if any)
+//  - linked_list (preview card payload when linked_list_id is set)
 
 async function hydratePosts(posts, userId) {
   if (!posts.length) return [];
@@ -848,12 +848,8 @@ async function hydratePosts(posts, userId) {
     : [];
   const pollVoteMap = new Map(pollVotes.map(v => [v.post_id.toString(), v.option_index]));
 
-  // ── 3. Linked lists in one query
-  const listIds = posts.map(p => p.linked_list_id).filter(Boolean);
-  const lists = listIds.length
-    ? await List.find({ _id: { $in: listIds } }).select('_id name').lean()
-    : [];
-  const listMap = new Map(lists.map(l => [l._id.toString(), l]));
+  const listIds = posts.map((p) => p.linked_list_id).filter(Boolean);
+  const listMap = await buildLinkedListCardMap(listIds);
 
   return posts.map(p => ({
     ...p,
@@ -866,8 +862,8 @@ async function hydratePosts(posts, userId) {
     viewer_poll_vote: pollVoteMap.has(p._id.toString())
       ? pollVoteMap.get(p._id.toString())
       : null,
-    linked_list: p.linked_list_id
-      ? (listMap.get(p.linked_list_id.toString()) || null)
+    linked_list: listRefKey(p.linked_list_id)
+      ? (listMap.get(listRefKey(p.linked_list_id)) || null)
       : null,
   }));
 }

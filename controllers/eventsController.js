@@ -6,14 +6,31 @@ const { sanitizeIdentifier, sanitizeText } = require('../utils/sanitize');
  * Internal helper — fire-and-forget event recording.
  * Never throws; any failure is caught and silently ignored so callers are unaffected.
  */
-async function fireEvent(userId, eventType, canonicalId = null, metadata = {}, sessionId = null) {
+async function fireEvent(userId, eventType, uniqueMediaId = null, metadata = {}, sessionId = null) {
     try {
+        const sanitizeMetadata = (val) => {
+            if (val === null || val === undefined) return val;
+            if (typeof val === 'string') return sanitizeText(val, { maxLen: 500, allowNewlines: false });
+            if (Array.isArray(val)) return val.map(sanitizeMetadata);
+            if (typeof val === 'object') {
+                const out = {};
+                Object.keys(val).forEach((k) => {
+                    out[k] = sanitizeMetadata(val[k]);
+                });
+                return out;
+            }
+            return val;
+        };
+
+        const safeEventType = sanitizeIdentifier(eventType, { maxLen: 64 });
+        if (!safeEventType) return;
+
         await Event.create({
             user_id: userId,
-            event_type: eventType,
-            canonical_id: canonicalId || null,
-            metadata: metadata || {},
-            session_id: sessionId || null,
+            event_type: safeEventType,
+            unique_media_id: uniqueMediaId || null,
+            metadata: sanitizeMetadata(metadata || {}),
+            session_id: sessionId ? sanitizeIdentifier(sessionId, { maxLen: 80 }) : null,
         });
     } catch (e) {
         // Silent — event loss is acceptable; it must never crash a business operation
@@ -25,7 +42,7 @@ async function fireEvent(userId, eventType, canonicalId = null, metadata = {}, s
  * Client-side event ingestion (search queries, page views, etc.)
  */
 const createEvent = async (req, res) => {
-    const { event_type, canonical_id, metadata, session_id } = req.body;
+    const { event_type, unique_media_id, metadata, session_id } = req.body;
     const user_id = req.user._id;
 
     const safeEventType = sanitizeIdentifier(event_type, { maxLen: 64 });
@@ -61,7 +78,7 @@ const createEvent = async (req, res) => {
         await Event.create({
             user_id,
             event_type: safeEventType,
-            canonical_id: canonical_id || null,
+            unique_media_id: unique_media_id || null,
             metadata: sanitizeMetadata(metadata || {}),
             session_id: safeSessionId,
         });

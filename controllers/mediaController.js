@@ -102,7 +102,6 @@ function serializeUserMedia(doc) {
         _id: doc._id,
         user_id: doc.user_id,
         unique_media_ref: media._id || doc.unique_media_ref,
-        canonical_id: doc.canonical_id || null,
 
         rating: ratingForApiResponse(doc.rating),
         status: doc.status,
@@ -198,11 +197,11 @@ async function findOrCreateUniqueMedia({
     score,
     created_by,
 }) {
-    const cleanSource = String(source || "").trim();
-    const cleanMediaId = String(media_id || "").trim();
-    const cleanName = String(name || "").trim();
-    const cleanType = String(type || "").trim();
-    const cleanImage = String(image_url || "").trim();
+    const cleanSource = sanitizeIdentifier(String(source || "").trim().toLowerCase(), { maxLen: 40 });
+    const cleanMediaId = sanitizeIdentifier(String(media_id || "").trim(), { maxLen: 120 });
+    const cleanName = sanitizeText(name, { maxLen: 200, allowNewlines: false });
+    const cleanType = sanitizeIdentifier(String(type || "").trim().toLowerCase(), { maxLen: 40 });
+    const cleanImage = sanitizeUrl(image_url) || "";
 
     if (!cleanName || !cleanType) {
         throw new Error("Name and type are required.");
@@ -254,51 +253,6 @@ async function findOrCreateUniqueMedia({
         }
     }
 
-    // Dual-write to canonical_media + media_sources (async, fire-and-forget)
-    setImmediate(async () => {
-        try {
-            const CanonicalMedia = require("../models/canonicalMediaModel");
-            const MediaSource = require("../models/mediaSourceModel");
-
-            // Find or create canonical entry by type + normalized_name
-            let canonical = await CanonicalMedia.findOne({
-                type: cleanType,
-                normalized_name: normalizeName(cleanName),
-            });
-
-            if (!canonical) {
-                canonical = await CanonicalMedia.create({
-                    type: cleanType,
-                    name: cleanName,
-                    normalized_name: normalizeName(cleanName),
-                    primary_image_url: cleanImage,
-                    is_user_submitted: !cleanSource || cleanSource === "internal",
-                });
-            }
-
-            // Upsert media source record if we have external identifiers
-            if (cleanSource && cleanMediaId) {
-                await MediaSource.findOneAndUpdate(
-                    { source: cleanSource, source_media_id: cleanMediaId },
-                    {
-                        canonical_id: canonical._id,
-                        metadata_snapshot: { name: cleanName, image_url: cleanImage, score },
-                        last_fetched_at: new Date(),
-                    },
-                    { upsert: true, new: true }
-                );
-            }
-
-            // Lazy backfill: set canonical_id on any UserMedia that references this UniqueMedia
-            await UserMedia.updateMany(
-                { unique_media_ref: uniqueMedia._id, canonical_id: null },
-                { $set: { canonical_id: canonical._id } }
-            );
-        } catch (e) {
-            // Silent — dual-write failures must never affect the primary response
-        }
-    });
-
     return uniqueMedia;
 }
 
@@ -322,7 +276,7 @@ const getMedias = async (req, res) => {
     }
 };
 
-// GET the authenticated user's library entry for a canonical title (type + source + media_id)
+// GET the authenticated user's library entry for a title (type + source + media_id)
 const getMyEntryByLookup = async (req, res) => {
     try {
         const user_id = req.user._id;
@@ -723,7 +677,13 @@ const createMedia = async (req, res) => {
             ...(safeReviewText !== undefined && { review_text: safeReviewText }),
             ...(contains_spoilers !== undefined && { contains_spoilers: Boolean(contains_spoilers) }),
             ...(safeSourceOfDiscovery !== undefined && { source_of_discovery: safeSourceOfDiscovery }),
-            ...(mood_tags !== undefined && { mood_tags: Array.isArray(mood_tags) ? mood_tags : [] }),
+            ...(mood_tags !== undefined && {
+                mood_tags: Array.isArray(mood_tags)
+                    ? mood_tags
+                        .map((tag) => sanitizeText(tag, { maxLen: 40, allowNewlines: false }))
+                        .filter(Boolean)
+                    : []
+            }),
             ...(owned !== undefined && { owned: Boolean(owned) }),
             ...(dropped_at_progress !== undefined && { dropped_at_progress }),
             ...(normalizedAspect.provided && { aspectRatio: normalizedAspect.value }),
@@ -755,8 +715,7 @@ const createMedia = async (req, res) => {
         await createFeedActivity(user_id, "added_media", userMedia._id);
         await checkMilestones(user_id);
 
-        // Fire log_media event (canonical_id may be null until dual-write backfill completes)
-        setImmediate(() => fireEvent(user_id, "log_media", populated.canonical_id || null, {
+        setImmediate(() => fireEvent(user_id, "log_media", uniqueMedia._id, {
             unique_media_id: String(uniqueMedia._id),
             status: status || "",
             rating: ratingToStore,
@@ -1060,58 +1019,12 @@ const linkUserMediaToCatalog = async (req, res) => {
             });
         }
 
-        // Ensure data linkage exists for analytics/recs: canonical + media_sources mapping.
-        const CanonicalMedia = require("../models/canonicalMediaModel");
-        const MediaSource = require("../models/mediaSourceModel");
-        let ms = await MediaSource.findOne({ source: target.source, source_media_id: target.media_id })
-            .select("canonical_id")
-            .lean();
-        let newCanonical = ms?.canonical_id || null;
-
-        if (!newCanonical) {
-            const canonicalType = String(target.type || "").trim().toLowerCase();
-            const canonicalName = String(target.name || "").trim() || requestName || oldUnique.name || "Untitled";
-            const canonicalImage = String(target.image_url || "").trim() || requestImageUrl || oldUnique.image_url || "";
-
-            let canonical = await CanonicalMedia.findOne({
-                type: canonicalType,
-                normalized_name: normalizeName(canonicalName),
-            });
-
-            if (!canonical) {
-                canonical = await CanonicalMedia.create({
-                    type: canonicalType,
-                    name: canonicalName,
-                    normalized_name: normalizeName(canonicalName),
-                    primary_image_url: canonicalImage,
-                    is_user_submitted: false,
-                });
-            }
-
-            const upsertedSource = await MediaSource.findOneAndUpdate(
-                { source: target.source, source_media_id: target.media_id },
-                {
-                    canonical_id: canonical._id,
-                    metadata_snapshot: {
-                        name: canonicalName,
-                        image_url: canonicalImage,
-                        score: target.score ?? scoreRaw ?? null,
-                    },
-                    last_fetched_at: new Date(),
-                },
-                { upsert: true, new: true }
-            ).select("canonical_id");
-
-            newCanonical = upsertedSource?.canonical_id || canonical._id;
-        }
-
         const displayNameCustom = Boolean(oldEntry.use_custom_display && oldEntry.custom_name);
         const serializedOldEntry = serializeUserMedia(oldEntry);
         const currentDisplayedImage = serializedOldEntry?.image_url || oldUnique.image_url || "";
 
         const updates = {
             unique_media_ref: target._id,
-            canonical_id: newCanonical,
             // Always pin the currently displayed cover so linking never swaps it.
             use_custom_display: true,
             custom_image_url: sanitizeUrl(currentDisplayedImage || ""),
@@ -1239,7 +1152,11 @@ const updateMedia = async (req, res) => {
             updates.owned = Boolean(incoming.owned);
         }
         if (incoming.mood_tags !== undefined) {
-            updates.mood_tags = Array.isArray(incoming.mood_tags) ? incoming.mood_tags : [];
+            updates.mood_tags = Array.isArray(incoming.mood_tags)
+                ? incoming.mood_tags
+                    .map((tag) => sanitizeText(tag, { maxLen: 40, allowNewlines: false }))
+                    .filter(Boolean)
+                : [];
         }
 
         const userMedia = await UserMedia.findOneAndUpdate(
@@ -1248,18 +1165,16 @@ const updateMedia = async (req, res) => {
             { new: true }
         ).populate("unique_media_ref");
 
-        const canonicalId = userMedia.canonical_id || null;
-
         if (updates.status !== undefined && updates.status !== oldUserMedia.status) {
             await createFeedActivity(user_id, "updated_status", id, oldUserMedia.status, updates.status);
-            setImmediate(() => fireEvent(user_id, "status_change", canonicalId, {
+            setImmediate(() => fireEvent(user_id, "status_change", userMedia.unique_media_ref, {
                 old: oldUserMedia.status,
                 new: updates.status,
             }));
         }
         if (updates.rating !== undefined && updates.rating !== oldUserMedia.rating) {
             await createFeedActivity(user_id, "updated_rating", id, oldUserMedia.rating, updates.rating);
-            setImmediate(() => fireEvent(user_id, "rate", canonicalId, {
+            setImmediate(() => fireEvent(user_id, "rate", userMedia.unique_media_ref, {
                 old: oldUserMedia.rating,
                 new: updates.rating,
             }));
@@ -1268,7 +1183,7 @@ const updateMedia = async (req, res) => {
             await createFeedActivity(user_id, "updated_progress", id, oldUserMedia.progress, updates.progress);
         }
         if (updates.review_text !== undefined) {
-            setImmediate(() => fireEvent(user_id, "review", canonicalId, {
+            setImmediate(() => fireEvent(user_id, "review", userMedia.unique_media_ref, {
                 has_spoilers: updates.contains_spoilers || false,
             }));
         }

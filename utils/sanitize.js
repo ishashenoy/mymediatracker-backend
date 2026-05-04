@@ -40,6 +40,10 @@ function sanitizeText(input, { maxLen = 500, allowNewlines = true } = {}) {
   return trimmed;
 }
 
+function sanitizeDisplayName(input, { maxLen = 50 } = {}) {
+  return sanitizeText(input, { maxLen, allowNewlines: false });
+}
+
 const ZERO_WIDTH_AND_BOM = /[\u200B-\u200D\uFEFF\u00AD]/g;
 
 /**
@@ -107,6 +111,7 @@ function validateUsernameShape(raw) {
 
 module.exports = {
   sanitizeText,
+  sanitizeDisplayName,
   sanitizeFeedbackMessage,
   sanitizeIdentifier,
   sanitizeUrl,

@@ -31,9 +31,9 @@ const eventSchema = new mongoose.Schema({
     required: true,
   },
   // nullable — not all events are tied to a specific title
-  canonical_id: {
+  unique_media_id: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'CanonicalMedia',
+    ref: 'UniqueMedia',
     default: null,
   },
   // Flexible per-event metadata (e.g. { query: 'naruto', results_count: 12 })
@@ -55,7 +55,7 @@ const eventSchema = new mongoose.Schema({
 
 eventSchema.index({ user_id: 1, created_at: -1 });
 eventSchema.index({ event_type: 1, created_at: -1 });
-eventSchema.index({ canonical_id: 1, event_type: 1, created_at: -1 });
+eventSchema.index({ unique_media_id: 1, event_type: 1, created_at: -1 });
 
 module.exports = mongoose.model('Event', eventSchema);
 module.exports.VALID_EVENT_TYPES = VALID_EVENT_TYPES;
