@@ -27,9 +27,6 @@ const limiter = rateLimit({
 // Suggestions cached per user (5 minutes) — invalidated on follow/unfollow
 const suggestionsCache = new NodeCache({ stdTTL: 300 });
 
-// Trending cached globally (24 hours) — same strategy as mediaController
-const trendingCache = new NodeCache({ stdTTL: 86400 });
-
 // ── Hydration helper (mirrors postController.hydratePosts) ──────────────────
 async function hydratePosts(posts, userId) {
   if (!posts.length) return [];
@@ -68,85 +65,37 @@ async function hydratePosts(posts, userId) {
   }));
 }
 
-// ── Sidebar helper: suggestions + trending in parallel ──────────────────────
-async function fetchSidebarData(userId) {
-  const [suggestionsResult, trendingResult] = await Promise.allSettled([
+/** Who-to-follow suggestions (cached per user for 5 min). */
+async function fetchSuggestions(userId) {
+  const key = `sug_${userId}`;
+  const cached = suggestionsCache.get(key);
+  if (cached) return cached;
 
-    // Who-to-follow suggestions (cached per user for 5 min)
-    (async () => {
-      const key = `sug_${userId}`;
-      const cached = suggestionsCache.get(key);
-      if (cached) return cached;
+  const user = await User.findById(userId).select('following').lean();
+  const followingUsernames = user?.following || [];
 
-      const user = await User.findById(userId).select('following').lean();
-      const followingUsernames = user?.following || [];
-
-      const suggestions = await User.aggregate([
-        {
-          $match: {
-            _id: { $ne: userId },
-            username: { $nin: followingUsernames },
-            private: { $ne: true },
-          },
-        },
-        { $addFields: { follower_count: { $size: { $ifNull: ['$followers', []] } } } },
-        { $sort: { follower_count: -1 } },
-        { $limit: 5 },
-        { $project: { username: 1, icon: 1, is_admin_badge: { $or: [{ $eq: ['$is_admin_badge', true] }, { $eq: ['$is_creator_badge', true] }] } } },
-      ]);
-
-      suggestionsCache.set(key, suggestions);
-      return suggestions;
-    })(),
-
-    // Trending media (cached globally for 24 h)
-    (async () => {
-      const cached = trendingCache.get('trending');
-      if (cached) return cached;
-
-      const result = await UserMedia.aggregate([
-        { $group: { _id: '$unique_media_ref', count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 15 },
-        {
-          $lookup: {
-            from: 'uniquemedias',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'media',
-          },
-        },
-        { $unwind: '$media' },
-        {
-          $project: {
-            _id: 0,
-            name: '$media.name',
-            type: '$media.type',
-            media_id: '$media.media_id',
-            source: '$media.source',
-            count: 1,
-            sampleDoc: {
-              _id: '$media._id',
-              name: '$media.name',
-              type: '$media.type',
-              image_url: '$media.image_url',
-              media_id: '$media.media_id',
-              source: '$media.source',
-              score: '$media.score',
-            },
-          },
-        },
-      ]);
-
-      trendingCache.set('trending', result);
-      return result;
-    })(),
+  const suggestions = await User.aggregate([
+    {
+      $match: {
+        _id: { $ne: userId },
+        username: { $nin: followingUsernames },
+        private: { $ne: true },
+      },
+    },
+    { $addFields: { follower_count: { $size: { $ifNull: ['$followers', []] } } } },
+    { $sort: { follower_count: -1 } },
+    { $limit: 5 },
+    {
+      $project: {
+        username: 1,
+        icon: 1,
+        is_admin_badge: { $or: [{ $eq: ['$is_admin_badge', true] }, { $eq: ['$is_creator_badge', true] }] },
+      },
+    },
   ]);
 
-  return {
-    suggestions: suggestionsResult.status === 'fulfilled' ? suggestionsResult.value : [],
-    trending:    trendingResult.status  === 'fulfilled' ? trendingResult.value    : [],
-  };
+  suggestionsCache.set(key, suggestions);
+  return suggestions;
 }
 
 function followingStripUserPayload(doc) {
@@ -246,8 +195,8 @@ async function fetchFollowingFeedStrip(viewerId) {
 }
 
 // ── GET /api/aggregate/home ─────────────────────────────────────────────────
-// Returns: { feed, suggestions, trending, followingFeedStrip }
-// Runs feed + sidebar queries in parallel; sidebar results are cached.
+// Returns: { feed, suggestions }. Trending and following-strip are omitted here
+// (use /api/medias/trending and /api/aggregate/following-strip when needed).
 // Only use this endpoint for the initial (no-cursor) page load — subsequent
 // "load more" requests should hit /api/posts/feed directly.
 router.get('/home', limiter, requireAuth, async (req, res) => {
@@ -265,7 +214,7 @@ router.get('/home', limiter, requireAuth, async (req, res) => {
     // Feed (not cached — user-specific and cursor-paginated)
     const feedPromise = (async () => {
       const rawPosts = await Post.find(feedMongoQuery)
-        .populate('author_id', 'username icon is_admin_badge is_creator_badge')
+        .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
         .sort({ created_at: -1 })
         .limit(limit + 1)
         .lean();
@@ -281,25 +230,20 @@ router.get('/home', limiter, requireAuth, async (req, res) => {
       };
     })();
 
-    const [feedResult, sidebarResult, followingStripResult] = await Promise.allSettled([
+    const [feedResult, suggestionsResult] = await Promise.allSettled([
       feedPromise,
-      fetchSidebarData(userId),
-      fetchFollowingFeedStrip(userId),
+      fetchSuggestions(userId),
     ]);
 
     const feed = feedResult.status === 'fulfilled'
       ? feedResult.value
       : { posts: [], nextCursor: null, hasMore: false };
 
-    const { suggestions, trending } = sidebarResult.status === 'fulfilled'
-      ? sidebarResult.value
-      : { suggestions: [], trending: [] };
-
-    const followingFeedStrip = followingStripResult.status === 'fulfilled'
-      ? followingStripResult.value
+    const suggestions = suggestionsResult.status === 'fulfilled'
+      ? suggestionsResult.value
       : [];
 
-    return res.status(200).json({ feed, suggestions, trending, followingFeedStrip });
+    return res.status(200).json({ feed, suggestions });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

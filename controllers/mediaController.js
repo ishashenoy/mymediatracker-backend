@@ -428,26 +428,16 @@ const trendingProjection = {
     },
 };
 
-/** Exclude library rows from users in the account-deletion grace window from trending. */
-const trendingExcludePendingDeletion = [
-    {
-        $lookup: {
-            from: 'users',
-            localField: 'user_id',
-            foreignField: '_id',
-            as: '_acct',
-        },
-    },
-    { $unwind: { path: '$_acct', preserveNullAndEmptyArrays: false } },
-    {
-        $match: {
-            $or: [
-                { '_acct.account_deletion_requested_at': null },
-                { '_acct.account_deletion_requested_at': { $exists: false } },
-            ],
-        },
-    },
-];
+/** User ids in account-deletion grace — exclude their library from trending (one query vs per-row lookup). */
+async function userIdsWithPendingAccountDeletion() {
+    return User.distinct('_id', {
+        account_deletion_requested_at: { $exists: true, $ne: null },
+    });
+}
+
+function matchExcludingPendingDeletion(userIdsToExclude) {
+    return { $match: { user_id: { $nin: userIdsToExclude } } };
+}
 
 const getTrendingMedia = async (req, res) => {
     try {
@@ -468,10 +458,12 @@ const getTrendingMedia = async (req, res) => {
             }
         }
 
+        const deletingIds = await userIdsWithPendingAccountDeletion();
+
         const pipeline =
             typeFilter === 'all'
                 ? [
-                      ...trendingExcludePendingDeletion,
+                      matchExcludingPendingDeletion(deletingIds),
                       { $group: { _id: '$unique_media_ref', count: { $sum: 1 } } },
                       { $sort: { count: -1 } },
                       { $limit: 15 },
@@ -487,7 +479,7 @@ const getTrendingMedia = async (req, res) => {
                       { $project: trendingProjection },
                   ]
                 : [
-                      ...trendingExcludePendingDeletion,
+                      matchExcludingPendingDeletion(deletingIds),
                       {
                           $lookup: {
                               from: 'uniquemedias',
@@ -516,6 +508,72 @@ const getTrendingMedia = async (req, res) => {
             trendingCache.set('trendingMedia', result);
         }
         return res.status(200).json(result);
+    } catch (error) {
+        return res.status(500).json({ error: error.message });
+    }
+};
+
+/** GET /api/medias/trending/by-types?types=movie,tv,... — one aggregation for Search Explore */
+const getTrendingMediaByTypes = async (req, res) => {
+    try {
+        const raw = (req.query.types || '').toString();
+        const types = [...new Set(
+            raw
+                .split(/[\s,]+/)
+                .map((t) => t.toLowerCase().trim())
+                .filter(Boolean)
+        )].filter((t) => TRENDING_ALLOWED_TYPES.includes(t));
+
+        if (!types.length) {
+            return res.status(400).json({ error: 'Provide types= as comma-separated allowed media types.' });
+        }
+
+        const cacheKey = `trendingMedia_byTypes_${[...types].sort().join(',')}`;
+        const cached = trendingCache.get(cacheKey);
+        if (cached) {
+            return res.status(200).json(cached);
+        }
+
+        const deletingIds = await userIdsWithPendingAccountDeletion();
+        const baseStages = [
+            matchExcludingPendingDeletion(deletingIds),
+            {
+                $lookup: {
+                    from: 'uniquemedias',
+                    localField: 'unique_media_ref',
+                    foreignField: '_id',
+                    as: 'um',
+                },
+            },
+            { $unwind: { path: '$um' } },
+        ];
+
+        const facet = {};
+        for (const t of types) {
+            facet[t] = [
+                { $match: { 'um.type': t } },
+                {
+                    $group: {
+                        _id: '$unique_media_ref',
+                        count: { $sum: 1 },
+                        media: { $first: '$um' },
+                    },
+                },
+                { $sort: { count: -1 } },
+                { $limit: 15 },
+                { $project: trendingProjection },
+            ];
+        }
+
+        const agg = await UserMedia.aggregate([...baseStages, { $facet: facet }]);
+        const row = agg[0] || {};
+        const body = {};
+        for (const t of types) {
+            body[t] = Array.isArray(row[t]) ? row[t] : [];
+        }
+
+        trendingCache.set(cacheKey, body);
+        return res.status(200).json(body);
     } catch (error) {
         return res.status(500).json({ error: error.message });
     }
@@ -1328,6 +1386,7 @@ module.exports = {
     uploadMediaImage,
     getProfileMedia,
     getTrendingMedia,
+    getTrendingMediaByTypes,
     getMedias,
     getMyEntryByLookup,
     getInternalMediaDetails,

@@ -6,6 +6,7 @@ const {
     getMedias,
     getMyEntryByLookup,
     getTrendingMedia,
+    getTrendingMediaByTypes,
     getInternalMediaDetails,
     deleteMedia,
     linkUserMediaToCatalog,
@@ -39,6 +40,7 @@ const upload = multer({
 router.use(limiter);
 
 // GET the top 30 medias.
+router.get('/trending/by-types', getTrendingMediaByTypes);
 router.get('/trending', getTrendingMedia);
 
 // suggest media matches (global search, no auth required)

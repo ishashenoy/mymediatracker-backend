@@ -81,5 +81,6 @@ const postSchema = new mongoose.Schema({
 });
 
 postSchema.index({ author_id: 1, created_at: -1 });
+postSchema.index({ tag: 1, created_at: -1 });
 
 module.exports = mongoose.model('Post', postSchema);

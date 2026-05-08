@@ -13,6 +13,7 @@ const feedRoutes = require('./routes/feed');
 const app = express();
 
 const cors = require('cors');
+const compression = require('compression');
 
 const corsOptions = {
   origin: [ // REMEMBER: change when domain name is changed
@@ -31,6 +32,7 @@ app.use(cors(corsOptions));
 app.set('trust proxy', 1);
 
 // middleware
+app.use(compression());
 app.use(express.json());
 app.use(require('./middleware/requestLogger'));
 

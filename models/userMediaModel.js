@@ -114,5 +114,6 @@ const userMediaSchema = new mongoose.Schema(
 
 userMediaSchema.index({ user_id: 1, status: 1 });
 userMediaSchema.index({ user_id: 1, fav: 1 });
+userMediaSchema.index({ user_id: 1, unique_media_ref: 1 });
 
 module.exports = mongoose.model('UserMedia', userMediaSchema);
