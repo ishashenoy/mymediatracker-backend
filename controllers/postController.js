@@ -17,6 +17,13 @@ const {
 } = require('../utils/postImageUpload');
 const { VALID_POST_TAGS, buildFeedPostQuery } = require('../utils/feedPostQuery');
 const { buildLinkedListCardMap, listRefKey } = require('../utils/linkedListCardPayload');
+const { enrichPostsLinkedMusicPreviews } = require('../utils/enrichLinkedMusicPreviews');
+
+function linkedMusicPreviewFromPayload(m) {
+  if (!m || String(m.type || '').toLowerCase() !== 'music') return null;
+  const raw = m.preview_url ?? m.previewUrl;
+  return sanitizeUrl(raw);
+}
 
 function normalizeEmbeddedImages(raw) {
   if (!raw) return [];
@@ -115,6 +122,7 @@ const createPost = async (req, res) => {
         type: linked_media.type,
         source: linked_media.source ? sanitizeIdentifier(linked_media.source, { maxLen: 40 }) : null,
         media_id: linked_media.media_id ? sanitizeIdentifier(linked_media.media_id, { maxLen: 120 }) : null,
+        preview_url: linkedMusicPreviewFromPayload(linked_media),
       };
     }
 
@@ -131,6 +139,7 @@ const createPost = async (req, res) => {
           type: m.type,
           source: m.source ? sanitizeIdentifier(m.source, { maxLen: 40 }) : null,
           media_id: m.media_id ? sanitizeIdentifier(m.media_id, { maxLen: 120 }) : null,
+          preview_url: linkedMusicPreviewFromPayload(m),
         }));
     }
 
@@ -832,7 +841,9 @@ const getSuggestions = async (req, res) => {
 async function hydratePosts(posts, userId) {
   if (!posts.length) return [];
 
-  const postIds = posts.map(p => p._id);
+  const postsWithPreviews = await enrichPostsLinkedMusicPreviews(posts);
+
+  const postIds = postsWithPreviews.map(p => p._id);
 
   // ── 1. Viewer interactions in one query
   const interactions = await PostInteraction.find({
@@ -842,16 +853,16 @@ async function hydratePosts(posts, userId) {
   const interactionSet = new Set(interactions.map(i => `${i.post_id}_${i.interaction_type}`));
 
   // ── 2. Poll votes for posts that have polls
-  const pollPostIds = posts.filter(p => p.poll && p.poll.options && p.poll.options.length).map(p => p._id);
+  const pollPostIds = postsWithPreviews.filter(p => p.poll && p.poll.options && p.poll.options.length).map(p => p._id);
   const pollVotes = pollPostIds.length
     ? await PollVote.find({ post_id: { $in: pollPostIds }, user_id: userId }).lean()
     : [];
   const pollVoteMap = new Map(pollVotes.map(v => [v.post_id.toString(), v.option_index]));
 
-  const listIds = posts.map((p) => p.linked_list_id).filter(Boolean);
+  const listIds = postsWithPreviews.map((p) => p.linked_list_id).filter(Boolean);
   const listMap = await buildLinkedListCardMap(listIds);
 
-  return posts.map(p => ({
+  return postsWithPreviews.map(p => ({
     ...p,
     author: p.author_id,
     viewer_interactions: {

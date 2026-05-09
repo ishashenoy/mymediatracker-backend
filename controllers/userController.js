@@ -33,7 +33,7 @@ cloudinary.config({
 
 //create jwt
 const createToken = (_id) => {
-    return jwt.sign({_id}, process.env.SECRET, { expiresIn: '7d' })
+    return jwt.sign({_id}, process.env.SECRET, { expiresIn: '90d' })
 }
 
 const serializePublicUser = (user) => {

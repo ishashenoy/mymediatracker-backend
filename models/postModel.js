@@ -7,6 +7,8 @@ const LinkedMediaSchema = new mongoose.Schema({
   type:     { type: String, default: null },
   source:   { type: String, default: null },
   media_id: { type: String, default: null },
+  /** iTunes / Apple Music 30s preview URL (music only) */
+  preview_url: { type: String, default: null },
 }, { _id: false });
 
 const PollOptionSchema = new mongoose.Schema({

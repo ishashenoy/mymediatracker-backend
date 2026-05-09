@@ -15,6 +15,7 @@ const List = require('../models/listModel');
 const ListItem = require('../models/listItemModel');
 const { buildFeedPostQuery } = require('../utils/feedPostQuery');
 const { buildLinkedListCardMap, listRefKey } = require('../utils/linkedListCardPayload');
+const { enrichPostsLinkedMusicPreviews } = require('../utils/enrichLinkedMusicPreviews');
 const { canViewPrivateAccountContent } = require('../utils/privacy');
 const { userHasAdminBadge } = require('../utils/adminBadge');
 
@@ -31,7 +32,9 @@ const suggestionsCache = new NodeCache({ stdTTL: 300 });
 async function hydratePosts(posts, userId) {
   if (!posts.length) return [];
 
-  const postIds = posts.map(p => p._id);
+  const postsWithPreviews = await enrichPostsLinkedMusicPreviews(posts);
+
+  const postIds = postsWithPreviews.map(p => p._id);
 
   const interactions = await PostInteraction.find({
     user_id: userId,
@@ -39,16 +42,16 @@ async function hydratePosts(posts, userId) {
   }).lean();
   const interactionSet = new Set(interactions.map(i => `${i.post_id}_${i.interaction_type}`));
 
-  const pollPostIds = posts.filter(p => p.poll && p.poll.options?.length).map(p => p._id);
+  const pollPostIds = postsWithPreviews.filter(p => p.poll && p.poll.options?.length).map(p => p._id);
   const pollVotes = pollPostIds.length
     ? await PollVote.find({ post_id: { $in: pollPostIds }, user_id: userId }).lean()
     : [];
   const pollVoteMap = new Map(pollVotes.map(v => [v.post_id.toString(), v.option_index]));
 
-  const listIds = posts.map(p => p.linked_list_id).filter(Boolean);
+  const listIds = postsWithPreviews.map(p => p.linked_list_id).filter(Boolean);
   const listMap = await buildLinkedListCardMap(listIds);
 
-  return posts.map(p => ({
+  return postsWithPreviews.map(p => ({
     ...p,
     author: p.author_id,
     viewer_interactions: {
