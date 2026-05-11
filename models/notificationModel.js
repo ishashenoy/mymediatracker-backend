@@ -6,6 +6,8 @@ const NOTIFICATION_TYPES = [
   'post_commented',
   'comment_replied',
   'new_follower',
+  'media_request_approved',
+  'media_request_rejected',
 ];
 
 const notificationSchema = new mongoose.Schema({
@@ -27,7 +29,7 @@ const notificationSchema = new mongoose.Schema({
   },
   entity_type: {
     type: String,
-    enum: ['post', 'comment', 'follow'],
+    enum: ['post', 'comment', 'follow', 'media_request'],
     required: true,
   },
   entity_id: {

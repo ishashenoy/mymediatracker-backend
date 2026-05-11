@@ -13,7 +13,6 @@ const {
     updateMedia,
     updateInternalMediaDetails,
     importMedia,
-    suggestMediaMatches
 } = require('../controllers/mediaController')
 const requireAuth = require('../middleware/requireAuth');
 const maintenanceMode = require('../middleware/maintenanceMode');
@@ -43,8 +42,6 @@ router.use(limiter);
 router.get('/trending/by-types', getTrendingMediaByTypes);
 router.get('/trending', getTrendingMedia);
 
-// suggest media matches (global search, no auth required)
-router.get('/matches', suggestMediaMatches);
 router.get('/details', getInternalMediaDetails);
 
 //require auth for all media routes

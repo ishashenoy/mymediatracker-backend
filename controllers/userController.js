@@ -16,7 +16,6 @@ const Feedback = require('../models/feedbackModel');
 const { createNotification } = require('./notificationController');
 const { isAdminUser, isOwnerOrAdmin, canViewPrivateAccountContent } = require('../utils/privacy');
 const { scheduledPurgeAtFromNow, GRACE_DAYS, isAccountPendingDeletion } = require('../utils/accountDeletion');
-const { userHasAdminBadge } = require('../utils/adminBadge');
 const UserMedia = require('../models/userMediaModel');
 const { IMAGE_TRANSFORMS } = require('../utils/imageTransformProfiles');
 const {
@@ -44,7 +43,7 @@ const serializePublicUser = (user) => {
         displayName: user.displayName || '',
         icon: user.icon || null,
         banner: user.banner || null,
-        is_admin_badge: userHasAdminBadge(user),
+        is_admin_badge: isAdminUser(user),
     };
 };
 
@@ -165,7 +164,7 @@ const loginUser = async (req, res) => {
       icon: user.icon || null,
       banner: user.banner || null,
       hide_explicit_covers: user.hide_explicit_covers !== false,
-      is_admin_badge: userHasAdminBadge(user),
+      is_admin_badge: isAdminUser(user),
       accountPendingDeletion: isAccountPendingDeletion(user),
       accountScheduledPurgeAt: user.account_scheduled_purge_at
         ? user.account_scheduled_purge_at.toISOString()
@@ -197,10 +196,10 @@ const getConnections = async (req, res) => {
 
     const [followerUsers, followingUsers] = await Promise.all([
         userFollowers.length
-            ? User.find({ username: { $in: userFollowers } }).select('username displayName icon is_admin_badge is_creator_badge').lean()
+            ? User.find({ username: { $in: userFollowers } }).select('username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin').lean()
             : [],
         userFollowing.length
-            ? User.find({ username: { $in: userFollowing } }).select('username displayName icon is_admin_badge is_creator_badge').lean()
+            ? User.find({ username: { $in: userFollowing } }).select('username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin').lean()
             : [],
     ]);
 
@@ -442,7 +441,7 @@ const searchUsers = async (req, res) => {
                 { account_deletion_requested_at: { $exists: false } },
             ],
         })
-        .select('username displayName icon private is_admin_badge is_creator_badge')
+        .select('username displayName icon private is_admin_badge is_creator_badge role isAdmin is_admin')
         .limit(20);
 
         const results = users.map(u => ({
@@ -450,7 +449,7 @@ const searchUsers = async (req, res) => {
             displayName: u.displayName || '',
             icon: u.icon || null,
             private: u.private,
-            is_admin_badge: userHasAdminBadge(u),
+            is_admin_badge: isAdminUser(u),
         }));
 
         return res.status(200).json(results);
@@ -843,7 +842,7 @@ const getUserProfile = async (req, res) => {
                 displayName: user.displayName || '',
                 icon: user.icon,
                 banner: user.banner || null,
-                is_admin_badge: userHasAdminBadge(user),
+                is_admin_badge: isAdminUser(user),
                 bio: user.bio || '',
                 instagram: user.instagram_handle || '',
                 twitter: user.twitter_handle || '',

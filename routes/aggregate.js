@@ -6,18 +6,14 @@ const rateLimit = require('express-rate-limit');
 const requireAuth = require('../middleware/requireAuth');
 
 const Post = require('../models/postModel');
-const PostInteraction = require('../models/postInteractionModel');
-const PollVote = require('../models/pollVoteModel');
 const UserMedia = require('../models/userMediaModel');
 const User = require('../models/userModel');
 const UniqueMedia = require('../models/uniqueMediaModel');
 const List = require('../models/listModel');
 const ListItem = require('../models/listItemModel');
 const { buildFeedPostQuery } = require('../utils/feedPostQuery');
-const { buildLinkedListCardMap, listRefKey } = require('../utils/linkedListCardPayload');
-const { enrichPostsLinkedMusicPreviews } = require('../utils/enrichLinkedMusicPreviews');
-const { canViewPrivateAccountContent } = require('../utils/privacy');
-const { userHasAdminBadge } = require('../utils/adminBadge');
+const { canViewPrivateAccountContent, isAdminUser, mongoIsAdminUserExpr } = require('../utils/privacy');
+const { hydratePosts } = require('../controllers/postController');
 
 const limiter = rateLimit({
   windowMs: 5 * 60 * 1000,
@@ -27,46 +23,6 @@ const limiter = rateLimit({
 
 // Suggestions cached per user (5 minutes) — invalidated on follow/unfollow
 const suggestionsCache = new NodeCache({ stdTTL: 300 });
-
-// ── Hydration helper (mirrors postController.hydratePosts) ──────────────────
-async function hydratePosts(posts, userId) {
-  if (!posts.length) return [];
-
-  const postsWithPreviews = await enrichPostsLinkedMusicPreviews(posts);
-
-  const postIds = postsWithPreviews.map(p => p._id);
-
-  const interactions = await PostInteraction.find({
-    user_id: userId,
-    post_id: { $in: postIds },
-  }).lean();
-  const interactionSet = new Set(interactions.map(i => `${i.post_id}_${i.interaction_type}`));
-
-  const pollPostIds = postsWithPreviews.filter(p => p.poll && p.poll.options?.length).map(p => p._id);
-  const pollVotes = pollPostIds.length
-    ? await PollVote.find({ post_id: { $in: pollPostIds }, user_id: userId }).lean()
-    : [];
-  const pollVoteMap = new Map(pollVotes.map(v => [v.post_id.toString(), v.option_index]));
-
-  const listIds = postsWithPreviews.map(p => p.linked_list_id).filter(Boolean);
-  const listMap = await buildLinkedListCardMap(listIds);
-
-  return postsWithPreviews.map(p => ({
-    ...p,
-    author: p.author_id,
-    viewer_interactions: {
-      liked:      interactionSet.has(`${p._id}_like`),
-      reposted:   interactionSet.has(`${p._id}_repost`),
-      bookmarked: interactionSet.has(`${p._id}_bookmark`),
-    },
-    viewer_poll_vote: pollVoteMap.has(p._id.toString())
-      ? pollVoteMap.get(p._id.toString())
-      : null,
-    linked_list: listRefKey(p.linked_list_id)
-      ? (listMap.get(listRefKey(p.linked_list_id)) || null)
-      : null,
-  }));
-}
 
 /** Who-to-follow suggestions (cached per user for 5 min). */
 async function fetchSuggestions(userId) {
@@ -92,7 +48,7 @@ async function fetchSuggestions(userId) {
       $project: {
         username: 1,
         icon: 1,
-        is_admin_badge: { $or: [{ $eq: ['$is_admin_badge', true] }, { $eq: ['$is_creator_badge', true] }] },
+        is_admin_badge: mongoIsAdminUserExpr,
       },
     },
   ]);
@@ -107,7 +63,7 @@ function followingStripUserPayload(doc) {
     username: doc.username,
     displayName: doc.displayName || '',
     icon: doc.icon || null,
-    is_admin_badge: userHasAdminBadge(doc),
+    is_admin_badge: isAdminUser(doc),
   };
 }
 
@@ -118,7 +74,7 @@ async function fetchFollowingFeedStrip(viewerId) {
   if (!followingUsernames.length) return [];
 
   const followedUsers = await User.find({ username: { $in: followingUsernames } })
-    .select('username displayName icon is_admin_badge is_creator_badge private account_deletion_requested_at')
+    .select('username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin private account_deletion_requested_at')
     .lean();
 
   const byUsername = new Map(followedUsers.map((u) => [u.username, u]));
@@ -217,7 +173,7 @@ router.get('/home', limiter, requireAuth, async (req, res) => {
     // Feed (not cached — user-specific and cursor-paginated)
     const feedPromise = (async () => {
       const rawPosts = await Post.find(feedMongoQuery)
-        .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
+        .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin')
         .sort({ created_at: -1 })
         .limit(limit + 1)
         .lean();

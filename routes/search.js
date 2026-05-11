@@ -1,6 +1,8 @@
 const express = require('express');
 const requireAuth = require('../middleware/requireAuth');
 const User = require('../models/userModel');
+const UniqueMedia = require('../models/uniqueMediaModel');
+const MediaRequest = require('../models/mediaRequestModel');
 const router = express.Router();
 
 const rateLimit = require('express-rate-limit');
@@ -48,6 +50,14 @@ router.get('/all/:title', requireAuth, async function(req, res) {
             .trim()
             .replace(/[^\p{L}\p{N}\s]/gu, " ")
             .replace(/\s+/g, " ");
+
+    const escapeRegex = (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const buildTokenJoinRegex = (value = "") => {
+        const tokens = normalizeSearchText(value).split(" ").filter(Boolean).map(escapeRegex);
+        if (!tokens.length) return null;
+        // Match tokens separated by punctuation/spaces (Mongo-friendly; avoids Unicode property classes).
+        return new RegExp(tokens.join("[^A-Za-z0-9]*"), "i");
+    };
 
     const levenshteinDistance = (a = "", b = "") => {
         const m = a.length;
@@ -164,8 +174,39 @@ router.get('/all/:title', requireAuth, async function(req, res) {
         );
     }
 
+    const normalizedQuery = normalizeSearchText(searchQuery);
+    const internalRegex = normalizedQuery ? new RegExp(escapeRegex(normalizedQuery), 'i') : null;
+    const tokenRegex = buildTokenJoinRegex(searchQuery);
+    const internalCatalogPromise = internalRegex
+        ? Promise.all([
+            UniqueMedia.find({
+                source: 'internal',
+                $or: [
+                    { normalized_name: internalRegex },
+                    ...(tokenRegex ? [{ name: tokenRegex }] : []),
+                ],
+                ...(rawType !== 'all' ? { type: rawType } : {}),
+            })
+                .select('media_id name image_url type source')
+                .limit(30)
+                .lean(),
+            MediaRequest.find({
+                review_status: 'approved',
+                $or: [
+                    { title: internalRegex },
+                    ...(tokenRegex ? [{ title: tokenRegex }] : []),
+                ],
+                ...(rawType !== 'all' ? { type: rawType } : {}),
+            })
+                .select('_id title image_url type')
+                .limit(30)
+                .lean(),
+        ])
+        : Promise.resolve([[], []]);
+
     try {
         const settled = await Promise.allSettled(fetchJobs);
+        const [internalCatalog, approvedRequests] = await internalCatalogPromise;
         clearTimeout(timeout);
 
         // Normalize and combine all results with relevance scoring
@@ -275,6 +316,40 @@ router.get('/all/:title', requireAuth, async function(req, res) {
                 });
             }
         });
+
+        if (Array.isArray(internalCatalog)) {
+            internalCatalog.forEach((item) => {
+                const name = item?.name || '';
+                const baseRelevance = getRelevanceScore(name, searchQuery);
+                allResults.push({
+                    id: item?.media_id?.toString?.() || item?._id?.toString?.() || '',
+                    name,
+                    image_url: item?.image_url || null,
+                    type: item?.type || '',
+                    source: 'internal',
+                    // Slight boost so approved in-app entries are easier to discover.
+                    relevance: baseRelevance > 0 ? baseRelevance + 18 : 0,
+                    raw: item,
+                });
+            });
+        }
+
+        if (Array.isArray(approvedRequests)) {
+            approvedRequests.forEach((row) => {
+                const name = row?.title || '';
+                const baseRelevance = getRelevanceScore(name, searchQuery);
+                allResults.push({
+                    id: row?._id?.toString?.() ? `mr_${row._id.toString()}` : '',
+                    name,
+                    image_url: row?.image_url || null,
+                    type: row?.type || '',
+                    source: 'internal',
+                    // Slight boost so approved in-app entries are easier to discover.
+                    relevance: baseRelevance > 0 ? baseRelevance + 18 : 0,
+                    raw: row,
+                });
+            });
+        }
 
         // De-duplicate by source+type+id and keep best-ranked item.
         const dedupedByKey = new Map();

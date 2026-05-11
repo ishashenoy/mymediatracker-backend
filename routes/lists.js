@@ -16,7 +16,6 @@ const { fireEvent } = require('../controllers/eventsController');
 const { sanitizeText, sanitizeUrl } = require('../utils/sanitize');
 const { resolveNewListItemSectionAndPosition } = require('../utils/listItemPlacement');
 const { isAdminUser, isOwnerOrAdmin, canViewPrivateAccountContent } = require('../utils/privacy');
-const { userHasAdminBadge } = require('../utils/adminBadge');
 const { IMAGE_TRANSFORMS } = require('../utils/imageTransformProfiles');
 
 // Set privacy for a list
@@ -462,6 +461,14 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'name and type are required.' });
   }
 
+  const trimmedSource = String(source ?? '').trim();
+  const trimmedMediaId = String(media_id ?? '').trim();
+  if (!trimmedSource || !trimmedMediaId) {
+    return res.status(400).json({
+      error: 'source and media_id are required. Add media from search or another catalog-backed flow.',
+    });
+  }
+
   if (!mongoose.Types.ObjectId.isValid(listId)) {
     return res.status(400).json({ error: 'Invalid listId.' });
   }
@@ -524,7 +531,14 @@ router.post('/:listId/add-media', requireAuth, async (req, res) => {
       section_id: null,
     });
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    const msg = error.message || '';
+    if (
+      msg.includes('source and media_id are required')
+      || msg.includes('Name and type are required')
+    ) {
+      return res.status(400).json({ error: msg });
+    }
+    return res.status(500).json({ error: msg });
   }
 });
 
@@ -977,13 +991,13 @@ router.get('/:listId/full', async (req, res) => {
       });
 
     const listObject = list.toObject();
-    const listOwner = await User.findById(list.user_id).select('_id username icon is_admin_badge is_creator_badge');
+    const listOwner = await User.findById(list.user_id).select('_id username icon is_admin_badge is_creator_badge role isAdmin is_admin');
     const owner = listOwner
       ? {
           _id: listOwner._id,
           username: listOwner.username,
           icon: listOwner.icon || null,
-          is_admin_badge: userHasAdminBadge(listOwner),
+          is_admin_badge: isAdminUser(listOwner),
         }
       : null;
 

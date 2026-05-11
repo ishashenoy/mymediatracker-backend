@@ -1,8 +1,24 @@
 const User = require('../models/userModel');
+const { userHasAdminBadge } = require('./adminBadge');
 
+/**
+ * Single source for “site admin”: legacy role flags OR admin/creator badge on the user doc.
+ */
 const isAdminUser = (user) => {
   if (!user) return false;
-  return user.role === 'admin' || user.isAdmin === true || user.is_admin === true;
+  if (user.role === 'admin' || user.isAdmin === true || user.is_admin === true) return true;
+  return userHasAdminBadge(user);
+};
+
+/** MongoDB `$project` expression — keep field checks in sync with `isAdminUser`. */
+const mongoIsAdminUserExpr = {
+  $or: [
+    { $eq: ['$role', 'admin'] },
+    { $eq: ['$isAdmin', true] },
+    { $eq: ['$is_admin', true] },
+    { $eq: ['$is_admin_badge', true] },
+    { $eq: ['$is_creator_badge', true] },
+  ],
 };
 
 const isOwnerOrAdmin = (targetUser, requestingUser) => {
@@ -33,7 +49,9 @@ const canPostDiscussionOnList = async (list, postingUserId) => {
   if (!list) return false;
   const listOwner = await User.findById(list.user_id).select('_id username private account_deletion_requested_at following role isAdmin is_admin').lean();
   if (!listOwner) return false;
-  const postingUser = await User.findById(postingUserId).select('_id username following role isAdmin is_admin').lean();
+  const postingUser = await User.findById(postingUserId)
+    .select('_id username following role isAdmin is_admin is_admin_badge is_creator_badge')
+    .lean();
   if (!postingUser) return false;
   if (!canViewPrivateAccountContent(listOwner, postingUser)) return false;
   if (list.private !== true) return true;
@@ -43,6 +61,7 @@ const canPostDiscussionOnList = async (list, postingUserId) => {
 
 module.exports = {
   isAdminUser,
+  mongoIsAdminUserExpr,
   isOwnerOrAdmin,
   canViewPrivateAccountContent,
   canPostDiscussionOnList,

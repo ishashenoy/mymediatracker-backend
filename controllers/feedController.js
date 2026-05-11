@@ -1,6 +1,7 @@
 const Feed = require('../models/feedModel');
 const UserMedia = require('../models/userMediaModel');
 const User = require('../models/userModel');
+const { isAdminUser } = require('../utils/privacy');
 
 // Get feed with filtering and pagination
 const getFeed = async (req, res) => {
@@ -26,14 +27,22 @@ const getFeed = async (req, res) => {
     }
 
     const activities = await Feed.find(query)
-      .populate('user', 'username icon is_admin_badge is_creator_badge')
+      .populate('user', 'username icon is_admin_badge is_creator_badge role isAdmin is_admin')
       .sort({ timestamp: -1 })
       .skip(skip)
       .limit(parsedLimit);
 
     const hasMore = activities.length === parsedLimit;
 
-    res.status(200).json({ activities, hasMore });
+    const activitiesPayload = activities.map((a) => {
+      const plain = typeof a.toObject === 'function' ? a.toObject() : a;
+      if (plain.user && typeof plain.user === 'object') {
+        plain.user = { ...plain.user, is_admin_badge: isAdminUser(plain.user) };
+      }
+      return plain;
+    });
+
+    res.status(200).json({ activities: activitiesPayload, hasMore });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

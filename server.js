@@ -53,6 +53,7 @@ app.use('/api/events', require('./routes/events'));
 app.use('/api/posts', require('./routes/posts'));
 app.use('/api/aggregate', require('./routes/aggregate'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/media-requests', require('./routes/mediaRequests'));
 
 //conecting to db
 mongoose.connect(process.env.MONGO_URI)
@@ -66,6 +67,7 @@ mongoose.connect(process.env.MONGO_URI)
     require('./models/commentModel');
     require('./models/notificationModel');
     require('./models/feedbackModel');
+    require('./models/mediaRequestModel');
 
     const { startAccountPurgeScheduler } = require('./jobs/purgeScheduledAccounts');
     startAccountPurgeScheduler();

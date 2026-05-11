@@ -36,10 +36,6 @@ function normalizeName(name = "") {
     return String(name).trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function escapeRegex(str = "") {
-    return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function normalizeProgress(rawProgress) {
     if (rawProgress === undefined || rawProgress === null || rawProgress === "") {
         return "";
@@ -158,36 +154,6 @@ function serializeInternalMediaDetails(uniqueMediaDoc, creatorDoc, viewerId) {
     };
 }
 
-async function findPotentialUniqueMatches({ name, type, limit = 8 }) {
-    const cleanName = String(name || "").trim();
-    const cleanType = String(type || "").trim();
-
-    if (!cleanName || !cleanType) return [];
-
-    const normalized = normalizeName(cleanName);
-    const escaped = escapeRegex(normalized);
-
-    const exactMatches = await UniqueMedia.find({
-        type: cleanType,
-        normalized_name: normalized,
-    })
-        .select("_id name image_url type source media_id score normalized_name")
-        .limit(limit);
-
-    if (exactMatches.length > 0) {
-        return exactMatches;
-    }
-
-    const prefixMatches = await UniqueMedia.find({
-        type: cleanType,
-        normalized_name: { $regex: `^${escaped}`, $options: "i" },
-    })
-        .select("_id name image_url type source media_id score normalized_name")
-        .limit(limit);
-
-    return prefixMatches;
-}
-
 async function findOrCreateUniqueMedia({
     name,
     image_url,
@@ -231,26 +197,7 @@ async function findOrCreateUniqueMedia({
             });
         }
     } else {
-        let fallback = await UniqueMedia.findOne({
-            type: cleanType,
-            normalized_name: normalizeName(cleanName),
-            image_url: cleanImage,
-        });
-
-        if (fallback) {
-            uniqueMedia = fallback;
-        } else {
-            uniqueMedia = await UniqueMedia.create({
-                type: cleanType,
-                name: cleanName,
-                normalized_name: normalizeName(cleanName),
-                image_url: cleanImage,
-                ...(cleanSource === "internal" && created_by ? { created_by } : {}),
-                ...(cleanSource ? { source: cleanSource } : {}),
-                ...(cleanMediaId ? { media_id: cleanMediaId } : {}),
-                ...(score !== undefined && score !== null && score !== "" ? { score } : {}),
-            });
-        }
+        throw new Error("source and media_id are required.");
     }
 
     return uniqueMedia;
@@ -386,22 +333,6 @@ const getProfileMedia = async (req, res) => {
         }
 
         return res.status(403).json({ error: "This account is private", private: true });
-    } catch (error) {
-        return res.status(500).json({ error: error.message });
-    }
-};
-
-// GET match suggestions
-const suggestMediaMatches = async (req, res) => {
-    try {
-        const { name, type } = req.query;
-
-        if (!name || !type) {
-            return res.status(400).json({ error: "Name and type are required." });
-        }
-
-        const matches = await findPotentialUniqueMatches({ name, type, limit: 8 });
-        return res.status(200).json(matches);
     } catch (error) {
         return res.status(500).json({ error: error.message });
     }
@@ -678,15 +609,15 @@ const createMedia = async (req, res) => {
                 return res.status(404).json({ error: "Matched media not found." });
             }
         } else {
-            let finalMediaId = media_id;
             const mediaIdStr = String(media_id ?? "").trim();
 
             if (!mediaIdStr) {
-                finalMediaId = generateSlug(name, image_url);
-            } else {
-                finalMediaId = mediaIdStr;
+                return res.status(400).json({
+                    error: "Catalog media_id is required. Add media from search or link a matched catalog entry.",
+                });
             }
 
+            const finalMediaId = mediaIdStr;
             const finalSource = source || "internal";
 
             uniqueMedia = await findOrCreateUniqueMedia({
@@ -882,7 +813,7 @@ const updateInternalMediaDetails = async (req, res) => {
     }
 };
 
-// POST upload custom media cover image
+// POST upload cover image for an existing library entry (replace_key = UserMedia _id)
 const uploadMediaImage = async (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: "Image file is required." });
@@ -899,17 +830,25 @@ const uploadMediaImage = async (req, res) => {
         }
         const rawReplaceKey = req.body?.replace_key;
         const safeReplaceKey = rawReplaceKey
-            ? sanitizeIdentifier(rawReplaceKey, { maxLen: 80 })
+            ? sanitizeIdentifier(String(rawReplaceKey).trim(), { maxLen: 80 })
             : '';
-        const publicId = safeReplaceKey
-            ? `media-covers/${userId}/${safeReplaceKey}`
-            : `media-covers/${userId}/${Date.now()}`;
+        if (!safeReplaceKey || !mongoose.Types.ObjectId.isValid(safeReplaceKey)) {
+            return res.status(400).json({ error: "replace_key (UserMedia id) is required." });
+        }
+        const owningEntry = await UserMedia.findOne({
+            _id: safeReplaceKey,
+            user_id: req.user._id,
+        }).select("_id");
+        if (!owningEntry) {
+            return res.status(404).json({ error: "Library entry not found." });
+        }
+        const publicId = `media-covers/${userId}/${safeReplaceKey}`;
 
         const result = await new Promise((resolve, reject) => {
             cloudinary.uploader.upload_stream(
                 {
                     public_id: publicId,
-                    overwrite: Boolean(safeReplaceKey),
+                    overwrite: true,
                     format: "webp",
                     transformation: IMAGE_TRANSFORMS.mediaCover,
                 },
@@ -1395,6 +1334,5 @@ module.exports = {
     updateMedia,
     updateInternalMediaDetails,
     importMedia,
-    suggestMediaMatches,
     findOrCreateUniqueMedia,
 };

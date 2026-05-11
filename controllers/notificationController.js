@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const Notification = require('../models/notificationModel');
 const Comment = require('../models/commentModel');
-const { userHasAdminBadge } = require('../utils/adminBadge');
+const { isAdminUser } = require('../utils/privacy');
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 50;
@@ -48,7 +48,7 @@ const listNotifications = async (req, res) => {
     const rows = await Notification.find(query)
       .sort({ created_at: -1 })
       .limit(limit + 1)
-      .populate('actor_id', 'username icon is_admin_badge is_creator_badge')
+      .populate('actor_id', 'username icon is_admin_badge is_creator_badge role isAdmin is_admin')
       .lean();
 
     const hasMore = rows.length > limit;
@@ -72,13 +72,16 @@ const listNotifications = async (req, res) => {
         target_post_id: n.entity_type === 'comment'
           ? (commentToPostMap.get(String(n.entity_id)) || null)
           : (n.entity_type === 'post' ? String(n.entity_id) : null),
+        target_media_request_id: n.entity_type === 'media_request'
+          ? String(n.entity_id)
+          : null,
         read: Boolean(n.read),
         created_at: n.created_at,
         actor: n.actor_id ? {
           _id: n.actor_id._id,
           username: n.actor_id.username,
           icon: n.actor_id.icon || null,
-          is_admin_badge: userHasAdminBadge(n.actor_id),
+          is_admin_badge: isAdminUser(n.actor_id),
         } : null,
       })),
       hasMore,

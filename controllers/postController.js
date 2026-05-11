@@ -9,7 +9,13 @@ const List = require('../models/listModel');
 const { fireEvent } = require('./eventsController');
 const { createNotification } = require('./notificationController');
 const { sanitizeText, sanitizeUrl, sanitizeIdentifier } = require('../utils/sanitize');
-const { canViewPrivateAccountContent, isOwnerOrAdmin, canPostDiscussionOnList } = require('../utils/privacy');
+const {
+  canViewPrivateAccountContent,
+  isOwnerOrAdmin,
+  canPostDiscussionOnList,
+  isAdminUser,
+  mongoIsAdminUserExpr,
+} = require('../utils/privacy');
 const {
   MAX_EMBEDDED_IMAGES,
   uploadPostImageBuffer,
@@ -155,7 +161,7 @@ const createPost = async (req, res) => {
     }
 
     const post = await Post.create(postData);
-    await post.populate('author_id', 'username displayName icon is_admin_badge is_creator_badge');
+    await post.populate('author_id', 'username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin');
 
     let linkedListData = null;
     if (post.linked_list_id) {
@@ -220,7 +226,7 @@ const getFeedPosts = async (req, res) => {
     const { query } = built;
 
     const rawPosts = await Post.find(query)
-      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -247,7 +253,7 @@ const getPostById = async (req, res) => {
 
   try {
     const raw = await Post.findById(postId)
-      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin')
       .lean();
     if (!raw) return res.status(404).json({ error: 'Post not found.' });
 
@@ -289,7 +295,7 @@ const getPostsByMedia = async (req, res) => {
       : mediaMatch;
 
     const rawPosts = await Post.find(query)
-      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -321,7 +327,7 @@ const getPostsByList = async (req, res) => {
     if (cursor) query.created_at = { $lt: new Date(cursor) };
 
     const rawPosts = await Post.find(query)
-      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -529,7 +535,7 @@ const addComment = async (req, res) => {
     });
 
     await Post.findByIdAndUpdate(postId, { $inc: { comment_count: 1 } });
-    await comment.populate('author_id', 'username displayName icon is_admin_badge is_creator_badge');
+    await comment.populate('author_id', 'username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin');
 
     fireEvent(userId, 'post_comment', null, {
       post_id: postId,
@@ -570,7 +576,7 @@ const addComment = async (req, res) => {
         body: comment.body,
         images: comment.images || [],
         created_at: comment.created_at,
-        author: comment.author_id,
+        author: withEffectiveAdminBadge(comment.author_id),
         like_count: 0,
         repost_count: 0,
         bookmark_count: 0,
@@ -595,7 +601,7 @@ const getComments = async (req, res) => {
     if (cursor) query.created_at = { $gt: new Date(cursor) };
 
     const rawComments = await Comment.find(query)
-      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin')
       .sort({ created_at: 1 })
       .limit(limit + 1)
       .lean();
@@ -616,7 +622,7 @@ const getComments = async (req, res) => {
       body: c.body,
       images: c.images || [],
       created_at: c.created_at,
-      author: c.author_id,
+      author: withEffectiveAdminBadge(c.author_id),
       like_count: c.like_count || 0,
       repost_count: c.repost_count || 0,
       bookmark_count: c.bookmark_count || 0,
@@ -655,7 +661,7 @@ const getBookmarkedPosts = async (req, res) => {
 
     const postIds = interactions.map(i => i.post_id);
     const posts = await Post.find({ _id: { $in: postIds } })
-      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin')
       .lean();
 
     // Preserve bookmark-date order
@@ -696,7 +702,7 @@ const getBookmarkedComments = async (req, res) => {
 
     const commentIds = interactions.map(i => i.comment_id);
     const comments = await Comment.find({ _id: { $in: commentIds } })
-      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin')
       .lean();
 
     const postIds = [...new Set(comments.map(c => c.post_id.toString()))];
@@ -712,7 +718,7 @@ const getBookmarkedComments = async (req, res) => {
       body: c.body,
       images: c.images || [],
       created_at: c.created_at,
-      author: c.author_id,
+      author: withEffectiveAdminBadge(c.author_id),
       post: postMap.get(c.post_id.toString()) || { _id: c.post_id },
       like_count: c.like_count || 0,
       repost_count: c.repost_count || 0,
@@ -752,7 +758,7 @@ const getUserPosts = async (req, res) => {
     const ownPostQuery = { author_id: profileUserId };
     if (dateFilter) ownPostQuery.created_at = dateFilter;
     const ownPosts = await Post.find(ownPostQuery)
-      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
+      .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin')
       .sort({ created_at: -1 })
       .limit(limit + 1)
       .lean();
@@ -768,7 +774,7 @@ const getUserPosts = async (req, res) => {
     if (repostInteractions.length > 0) {
       const repostPostIds = repostInteractions.map(i => i.post_id);
       const repostedPosts = await Post.find({ _id: { $in: repostPostIds } })
-        .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge')
+        .populate('author_id', 'username displayName icon is_admin_badge is_creator_badge role isAdmin is_admin')
         .lean();
       const repostDateMap = new Map(
         repostInteractions.map(i => [i.post_id.toString(), i.created_at])
@@ -823,7 +829,7 @@ const getSuggestions = async (req, res) => {
       { $addFields: { follower_count: { $size: { $ifNull: ['$followers', []] } } } },
       { $sort: { follower_count: -1 } },
       { $limit: 5 },
-      { $project: { username: 1, icon: 1, is_admin_badge: { $or: [{ $eq: ['$is_admin_badge', true] }, { $eq: ['$is_creator_badge', true] }] } } },
+      { $project: { username: 1, icon: 1, is_admin_badge: mongoIsAdminUserExpr } },
     ]);
 
     return res.status(200).json({ suggestions });
@@ -837,6 +843,12 @@ const getSuggestions = async (req, res) => {
 //  - viewer_interactions (liked/reposted/bookmarked)
 //  - viewer_poll_vote (option_index or null)
 //  - linked_list (preview card payload when linked_list_id is set)
+
+function withEffectiveAdminBadge(userLike) {
+  if (!userLike || typeof userLike !== 'object') return userLike;
+  if (userLike.username == null && userLike._id == null) return userLike;
+  return { ...userLike, is_admin_badge: isAdminUser(userLike) };
+}
 
 async function hydratePosts(posts, userId) {
   if (!posts.length) return [];
@@ -864,7 +876,7 @@ async function hydratePosts(posts, userId) {
 
   return postsWithPreviews.map(p => ({
     ...p,
-    author: p.author_id,
+    author: withEffectiveAdminBadge(p.author_id),
     viewer_interactions: {
       liked:      interactionSet.has(`${p._id}_like`),
       reposted:   interactionSet.has(`${p._id}_repost`),
@@ -998,7 +1010,7 @@ function shapePost(post, viewerInteractions, linkedList) {
     bookmark_count:  obj.bookmark_count,
     view_count:      obj.view_count,
     created_at:      obj.created_at,
-    author:          obj.author_id,
+    author:          withEffectiveAdminBadge(obj.author_id),
     viewer_interactions: viewerInteractions || { liked: false, reposted: false, bookmarked: false },
     viewer_poll_vote: null,
   };
@@ -1026,4 +1038,5 @@ module.exports = {
   toggleCommentRepost,
   toggleCommentBookmark,
   deleteComment,
+  hydratePosts,
 };
