@@ -57,6 +57,8 @@ const mediaRequestSchema = new mongoose.Schema(
       default: null,
     },
     reviewed_at: { type: Date, default: null },
+    /** Visible to the requester; set by admins (see mediaRequestController). */
+    admin_comment: { type: String, default: '', trim: true, maxlength: 2000 },
   },
   { timestamps: true }
 );

@@ -12,6 +12,7 @@ const {
   uploadMediaRequestCover,
   approveMediaRequest,
   rejectMediaRequest,
+  patchMediaRequestAdminComment,
 } = require('../controllers/mediaRequestController');
 
 const limiter = rateLimit({
@@ -54,6 +55,8 @@ router.post('/:id/cover', maintenanceMode, (req, res, next) => {
 
 router.post('/:id/approve', requireAdmin, approveMediaRequest);
 router.post('/:id/reject', requireAdmin, rejectMediaRequest);
+
+router.patch('/:id/admin-comment', requireAdmin, patchMediaRequestAdminComment);
 
 router.patch('/:id', maintenanceMode, updateMediaRequest);
 

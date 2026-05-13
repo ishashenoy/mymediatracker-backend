@@ -21,6 +21,12 @@ const corsOptions = {
     'http://localhost:3000',
     'http://localhost:3001',
     'http://localhost:3002',
+    'http://localhost:5173',
+    'http://localhost:5174',
+    'http://localhost:4173',
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:5174',
+    'http://127.0.0.1:4173',
     'http://localhost:8081',
     'http://10.39.52.174:8081',
   ],
@@ -54,6 +60,7 @@ app.use('/api/posts', require('./routes/posts'));
 app.use('/api/aggregate', require('./routes/aggregate'));
 app.use('/api/notifications', require('./routes/notifications'));
 app.use('/api/media-requests', require('./routes/mediaRequests'));
+app.use('/api/duplicate-review', require('./routes/duplicateReview'));
 
 //conecting to db
 mongoose.connect(process.env.MONGO_URI)

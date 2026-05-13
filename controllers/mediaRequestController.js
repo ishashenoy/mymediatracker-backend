@@ -156,6 +156,7 @@ function serializeRequest(doc, { userId }) {
       doc.review_status === 'approved' || doc.review_status === 'rejected' ? doc.review_status : 'pending',
     reviewed_at: doc.reviewed_at || null,
     reviewed_by: doc.reviewed_by ? doc.reviewed_by.toString() : null,
+    admin_comment: doc.admin_comment || '',
   };
 }
 
@@ -435,17 +436,17 @@ const setReviewStatus = async (req, res, status) => {
       return res.status(404).json({ error: 'Request not found.' });
     }
 
-    const doc = await MediaRequest.findByIdAndUpdate(
-      id,
-      {
-        $set: {
-          review_status: status,
-          reviewed_by: req.user._id,
-          reviewed_at: new Date(),
-        },
-      },
-      { new: true }
-    ).lean();
+    const body = req.body || {};
+    const $set = {
+      review_status: status,
+      reviewed_by: req.user._id,
+      reviewed_at: new Date(),
+    };
+    if (Object.prototype.hasOwnProperty.call(body, 'comment')) {
+      $set.admin_comment = sanitizeText(body.comment, { maxLen: 2000, allowNewlines: true }) || '';
+    }
+
+    const doc = await MediaRequest.findByIdAndUpdate(id, { $set }, { new: true }).lean();
 
     if (!doc) {
       return res.status(404).json({ error: 'Request not found.' });
@@ -477,6 +478,39 @@ const setReviewStatus = async (req, res, status) => {
 const approveMediaRequest = async (req, res) => setReviewStatus(req, res, 'approved');
 const rejectMediaRequest = async (req, res) => setReviewStatus(req, res, 'rejected');
 
+const patchMediaRequestAdminComment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(404).json({ error: 'Request not found.' });
+    }
+
+    const body = req.body || {};
+    if (!Object.prototype.hasOwnProperty.call(body, 'comment')) {
+      return res.status(400).json({ error: 'Missing comment field.' });
+    }
+
+    const comment = sanitizeText(body.comment, { maxLen: 2000, allowNewlines: true }) || '';
+
+    const doc = await MediaRequest.findByIdAndUpdate(
+      id,
+      { $set: { admin_comment: comment } },
+      { new: true }
+    ).lean();
+
+    if (!doc) {
+      return res.status(404).json({ error: 'Request not found.' });
+    }
+
+    return res.status(200).json({
+      request: serializeRequest(doc, { userId: req.user._id }),
+    });
+  } catch (err) {
+    console.error('patchMediaRequestAdminComment', err);
+    return res.status(500).json({ error: err.message || 'Failed to save comment.' });
+  }
+};
+
 module.exports = {
   listMediaRequests,
   getMediaRequestById,
@@ -485,6 +519,7 @@ module.exports = {
   uploadMediaRequestCover,
   approveMediaRequest,
   rejectMediaRequest,
+  patchMediaRequestAdminComment,
   MEDIA_REQUEST_TYPES,
   AIRING_STATUS_VALUES,
 };
